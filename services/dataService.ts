@@ -4,8 +4,8 @@ import { Exam, Question, QuestionType, StudentProgress, User, UserRole } from '.
 // ==========================================
 // SUPABASE CONFIGURATION
 // ==========================================
-const SUPABASE_URL = (import.meta as any).env?.VITE_SUPABASE_URL || 'https://wbkpuqtzkpvhjnckinep.supabase.co'; 
-const SUPABASE_KEY = (import.meta as any).env?.VITE_SUPABASE_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6India3B1cXR6a3B2aGpuY2tpbmVwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzA1NDE2OTMsImV4cCI6MjA4NjExNzY5M30.2Vsb4vl5WTnLLn60033Rcx-X6TfdDXrI1Qsuj8i_dN0';
+const SUPABASE_URL = (import.meta as any).env?.VITE_SUPABASE_URL || ''; 
+const SUPABASE_KEY = (import.meta as any).env?.VITE_SUPABASE_KEY || '';
 
 // Initialize Client only if keys are present
 const supabase = (SUPABASE_URL && SUPABASE_KEY) 
@@ -13,16 +13,38 @@ const supabase = (SUPABASE_URL && SUPABASE_KEY)
   : null;
 
 // ==========================================
-// MOCK DATA (Fallback)
+// MOCK DATA STORAGE (Local Storage Wrapper)
 // ==========================================
-let mockUsers: User[] = [
+// Using LocalStorage allows tabs (Student vs Teacher) to share state in development without a backend.
+
+const STORAGE_KEYS = {
+  USERS: 'uniexam_mock_users',
+  EXAMS: 'uniexam_mock_exams',
+  PROGRESS: 'uniexam_mock_progress'
+};
+
+const loadMockData = <T>(key: string, defaultData: T): T => {
+  try {
+    const stored = localStorage.getItem(key);
+    return stored ? JSON.parse(stored) : defaultData;
+  } catch {
+    return defaultData;
+  }
+};
+
+const saveMockData = (key: string, data: any) => {
+  localStorage.setItem(key, JSON.stringify(data));
+};
+
+// --- DEFAULT DATA SEEDS ---
+const defaultUsers: User[] = [
   { id: 't1', name: 'Dr. Smith', role: UserRole.TEACHER },
   { id: 's1', name: 'Alice Student', role: UserRole.STUDENT, studentId: '64001', section: 'SEC01' },
   { id: 's2', name: 'Bob Student', role: UserRole.STUDENT, studentId: '64002', section: 'SEC02' }
 ];
 const mockPasswords: Record<string, string> = { 'Dr. Smith': 'admin123' };
 
-let mockExams: Exam[] = [
+const defaultExams: Exam[] = [
   {
     id: 'e1',
     title: 'CS101 Midterm: Java Basics',
@@ -61,7 +83,10 @@ let mockExams: Exam[] = [
   }
 ];
 
-let mockProgressStore: StudentProgress[] = [];
+// --- GETTERS (Always fetch fresh from Storage) ---
+const getMockUsers = () => loadMockData<User[]>(STORAGE_KEYS.USERS, defaultUsers);
+const getMockExams = () => loadMockData<Exam[]>(STORAGE_KEYS.EXAMS, defaultExams);
+const getMockProgress = () => loadMockData<StudentProgress[]>(STORAGE_KEYS.PROGRESS, []);
 
 // ==========================================
 // HELPERS (Map DB Snake_Case to App CamelCase)
@@ -124,8 +149,13 @@ export const loginTeacher = async (name: string, password: string): Promise<User
     if (error || !data) return null;
     return mapUser(data);
   }
+  
+  const mockUsers = getMockUsers();
+  // Check predefined password for default user, or allow any for newly registered
+  const isValid = (mockPasswords[name] === password) || (mockUsers.some(u => u.name === name && u.role === UserRole.TEACHER));
+  
   const user = mockUsers.find(u => u.role === UserRole.TEACHER && u.name === name);
-  if (user && mockPasswords[name] === password) return user;
+  if (user && isValid) return user;
   return null;
 };
 
@@ -139,11 +169,17 @@ export const registerTeacher = async (name: string, password: string): Promise<U
     if (error) throw new Error(error.message);
     return mapUser(data);
   }
+  
+  const mockUsers = getMockUsers();
   const existing = mockUsers.find(u => u.name === name && u.role === UserRole.TEACHER);
   if (existing) throw new Error("Username already taken");
+  
   const newUser: User = { id: `t_${Date.now()}`, name, role: UserRole.TEACHER };
-  mockUsers.push(newUser);
-  mockPasswords[name] = password;
+  const updatedUsers = [...mockUsers, newUser];
+  
+  saveMockData(STORAGE_KEYS.USERS, updatedUsers);
+  mockPasswords[name] = password; // Note: In a real app/localstorage, passwords should be stored securely
+  
   return newUser;
 };
 
@@ -153,6 +189,7 @@ export const loginStudent = async (studentId: string): Promise<User | null> => {
     if (error || !data) return null;
     return mapUser(data);
   }
+  const mockUsers = getMockUsers();
   return mockUsers.find(u => u.studentId === studentId && u.role === UserRole.STUDENT) || null;
 };
 
@@ -165,6 +202,8 @@ export const importStudents = async (studentData: {id: string, name: string, sec
     if (error) throw new Error("Import failed: " + error.message);
     return;
   }
+  
+  const mockUsers = getMockUsers();
   const newUsers = studentData.map(s => ({
     id: `s_${s.id}`,
     name: s.name,
@@ -172,8 +211,12 @@ export const importStudents = async (studentData: {id: string, name: string, sec
     section: s.section,
     role: UserRole.STUDENT
   }));
-  const uniqueNewUsers = newUsers.filter(nu => !mockUsers.some(u => u.studentId === nu.studentId));
-  mockUsers = [...mockUsers, ...uniqueNewUsers];
+  
+  // Merge and avoid duplicates based on studentId
+  const existingIds = new Set(mockUsers.map(u => u.studentId));
+  const uniqueNewUsers = newUsers.filter(nu => !existingIds.has(nu.studentId));
+  
+  saveMockData(STORAGE_KEYS.USERS, [...mockUsers, ...uniqueNewUsers]);
 };
 
 // ==========================================
@@ -190,7 +233,12 @@ export const uploadExamImage = async (file: File): Promise<string> => {
     const { data } = supabase.storage.from('exam-images').getPublicUrl(filePath);
     return data.publicUrl;
   }
-  return URL.createObjectURL(file);
+  // Fallback for mock mode: verify file reading
+  return new Promise((resolve) => {
+      const reader = new FileReader();
+      reader.onloadend = () => resolve(reader.result as string);
+      reader.readAsDataURL(file);
+  });
 };
 
 export const getExamsForStudent = async (student: User): Promise<Exam[]> => {
@@ -200,6 +248,7 @@ export const getExamsForStudent = async (student: User): Promise<Exam[]> => {
     const allExams = data.map(mapExam);
     return allExams.filter(e => e.assignedSections.includes(student.section || ''));
   }
+  const mockExams = getMockExams();
   return mockExams.filter(e => e.isActive && e.assignedSections.includes(student.section || ''));
 };
 
@@ -209,7 +258,7 @@ export const getExamsForTeacher = async (): Promise<Exam[]> => {
     if (error) return [];
     return data.map(mapExam);
   }
-  return mockExams;
+  return getMockExams();
 };
 
 export const saveExam = async (exam: Exam): Promise<void> => {
@@ -248,9 +297,17 @@ export const saveExam = async (exam: Exam): Promise<void> => {
     }
     return;
   }
+  
+  const mockExams = getMockExams();
   const index = mockExams.findIndex(e => e.id === exam.id);
-  if (index >= 0) mockExams[index] = exam;
-  else mockExams.push(exam);
+  let updatedExams;
+  if (index >= 0) {
+    updatedExams = [...mockExams];
+    updatedExams[index] = exam;
+  } else {
+    updatedExams = [...mockExams, exam];
+  }
+  saveMockData(STORAGE_KEYS.EXAMS, updatedExams);
 };
 
 export const deleteExam = async (examId: string): Promise<void> => {
@@ -258,7 +315,9 @@ export const deleteExam = async (examId: string): Promise<void> => {
     await supabase.from('exams').delete().eq('id', examId);
     return;
   }
-  mockExams = mockExams.filter(e => e.id !== examId);
+  const mockExams = getMockExams();
+  const updatedExams = mockExams.filter(e => e.id !== examId);
+  saveMockData(STORAGE_KEYS.EXAMS, updatedExams);
 };
 
 export const updateExamStatus = async (examId: string, isActive: boolean): Promise<void> => {
@@ -266,8 +325,13 @@ export const updateExamStatus = async (examId: string, isActive: boolean): Promi
     await supabase.from('exams').update({ is_active: isActive }).eq('id', examId);
     return;
   }
-  const exam = mockExams.find(e => e.id === examId);
-  if (exam) exam.isActive = isActive;
+  const mockExams = getMockExams();
+  const index = mockExams.findIndex(e => e.id === examId);
+  if (index >= 0) {
+      const updatedExams = [...mockExams];
+      updatedExams[index] = { ...updatedExams[index], isActive };
+      saveMockData(STORAGE_KEYS.EXAMS, updatedExams);
+  }
 };
 
 // ==========================================
@@ -285,6 +349,7 @@ export const getStudentProgress = async (studentId: string, examId: string): Pro
     if (error || !data) return null;
     return mapProgress(data, data.users?.name);
   }
+  const mockProgressStore = getMockProgress();
   return mockProgressStore.find(p => p.studentId === studentId && p.examId === examId) || null;
 }
 
@@ -307,12 +372,17 @@ export const submitStudentProgress = async (progress: StudentProgress) => {
     return;
   }
 
+  const mockProgressStore = getMockProgress();
   const existingIndex = mockProgressStore.findIndex(p => p.studentId === progress.studentId && p.examId === progress.examId);
+  let updatedStore;
+  
   if (existingIndex >= 0) {
-    mockProgressStore[existingIndex] = { ...progress, lastUpdated: Date.now() };
+    updatedStore = [...mockProgressStore];
+    updatedStore[existingIndex] = { ...progress, lastUpdated: Date.now() };
   } else {
-    mockProgressStore.push({ ...progress, lastUpdated: Date.now() });
+    updatedStore = [...mockProgressStore, { ...progress, lastUpdated: Date.now() }];
   }
+  saveMockData(STORAGE_KEYS.PROGRESS, updatedStore);
 };
 
 export const getLiveProgress = async (examId: string): Promise<StudentProgress[]> => {
@@ -324,6 +394,7 @@ export const getLiveProgress = async (examId: string): Promise<StudentProgress[]
     if (error || !data) return [];
     return data.map((p: any) => mapProgress(p, p.users?.name));
   }
+  const mockProgressStore = getMockProgress();
   return mockProgressStore.filter(p => p.examId === examId);
 };
 
@@ -359,6 +430,10 @@ export const getExamResults = async (examId: string): Promise<ExamResult[]> => {
        }
      }
   } else {
+     const mockExams = getMockExams();
+     const mockProgressStore = getMockProgress();
+     const mockUsers = getMockUsers();
+     
      exam = mockExams.find(e => e.id === examId);
      progressList = mockProgressStore.filter(p => p.examId === examId);
      userLookup = (sid) => mockUsers.find(u => u.studentId === sid);
