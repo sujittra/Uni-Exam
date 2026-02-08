@@ -49,6 +49,7 @@ create table public.student_progress (
   answers jsonb default '{}'::jsonb, -- Stores answers as JSON object { "q_id": "answer" }
   score int default 0,
   status text check (status in ('IDLE', 'IN_PROGRESS', 'COMPLETED')) default 'IDLE',
+  started_at timestamp with time zone, -- NEW: To track strict timing
   -- Ensure one active attempt per student per exam
   unique(student_id, exam_id)
 );

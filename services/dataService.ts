@@ -4,9 +4,6 @@ import { Exam, Question, QuestionType, StudentProgress, User, UserRole } from '.
 // ==========================================
 // SUPABASE CONFIGURATION
 // ==========================================
-// For Vercel Deployment, we use Environment Variables.
-// Fallback to hardcoded values for local testing if env vars are missing.
-
 const SUPABASE_URL = (import.meta as any).env?.VITE_SUPABASE_URL || 'https://wbkpuqtzkpvhjnckinep.supabase.co'; 
 const SUPABASE_KEY = (import.meta as any).env?.VITE_SUPABASE_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6India3B1cXR6a3B2aGpuY2tpbmVwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzA1NDE2OTMsImV4cCI6MjA4NjExNzY5M30.2Vsb4vl5WTnLLn60033Rcx-X6TfdDXrI1Qsuj8i_dN0';
 
@@ -101,12 +98,13 @@ const mapQuestion = (q: any): Question => ({
 
 const mapProgress = (p: any, userName: string = ''): StudentProgress => ({
   studentId: p.student_id,
-  studentName: userName, // Joined manually or passed in
+  studentName: userName, 
   examId: p.exam_id,
   currentQuestionIndex: p.current_question_index,
   answers: p.answers || {},
   score: p.score,
   status: p.status,
+  startedAt: p.started_at ? new Date(p.started_at).getTime() : undefined,
   lastUpdated: new Date(p.updated_at).getTime()
 });
 
@@ -121,14 +119,11 @@ export const loginTeacher = async (name: string, password: string): Promise<User
       .select('*')
       .eq('role', 'TEACHER')
       .eq('name', name)
-      .eq('password', password) // Note: In production, hash passwords!
+      .eq('password', password)
       .single();
-    
     if (error || !data) return null;
     return mapUser(data);
   }
-  
-  // Mock Fallback
   const user = mockUsers.find(u => u.role === UserRole.TEACHER && u.name === name);
   if (user && mockPasswords[name] === password) return user;
   return null;
@@ -141,12 +136,9 @@ export const registerTeacher = async (name: string, password: string): Promise<U
       .insert({ name, password, role: 'TEACHER' })
       .select()
       .single();
-    
     if (error) throw new Error(error.message);
     return mapUser(data);
   }
-
-  // Mock Fallback
   const existing = mockUsers.find(u => u.name === name && u.role === UserRole.TEACHER);
   if (existing) throw new Error("Username already taken");
   const newUser: User = { id: `t_${Date.now()}`, name, role: UserRole.TEACHER };
@@ -157,36 +149,22 @@ export const registerTeacher = async (name: string, password: string): Promise<U
 
 export const loginStudent = async (studentId: string): Promise<User | null> => {
   if (supabase) {
-    const { data, error } = await supabase
-      .from('users')
-      .select('*')
-      .eq('student_id', studentId)
-      .single();
-    
+    const { data, error } = await supabase.from('users').select('*').eq('student_id', studentId).single();
     if (error || !data) return null;
     return mapUser(data);
   }
-
-  // Mock Fallback
   return mockUsers.find(u => u.studentId === studentId && u.role === UserRole.STUDENT) || null;
 };
 
 export const importStudents = async (studentData: {id: string, name: string, section: string}[]) => {
   if (supabase) {
     const { error } = await supabase.from('users').upsert(
-      studentData.map(s => ({
-        student_id: s.id,
-        name: s.name,
-        section: s.section,
-        role: 'STUDENT'
-      })),
+      studentData.map(s => ({ student_id: s.id, name: s.name, section: s.section, role: 'STUDENT' })),
       { onConflict: 'student_id' }
     );
     if (error) throw new Error("Import failed: " + error.message);
     return;
   }
-
-  // Mock Fallback
   const newUsers = studentData.map(s => ({
     id: `s_${s.id}`,
     name: s.name,
@@ -204,47 +182,24 @@ export const importStudents = async (studentData: {id: string, name: string, sec
 
 export const uploadExamImage = async (file: File): Promise<string> => {
   if (supabase) {
-    // 1. Create a unique file name
     const fileExt = file.name.split('.').pop();
     const fileName = `${Date.now()}_${Math.random().toString(36).substr(2, 9)}.${fileExt}`;
     const filePath = `${fileName}`;
-
-    // 2. Upload to 'exam-images' bucket
-    const { error: uploadError } = await supabase.storage
-      .from('exam-images')
-      .upload(filePath, file);
-
-    if (uploadError) {
-      throw new Error(`Upload failed: ${uploadError.message}`);
-    }
-
-    // 3. Get Public URL
-    const { data } = supabase.storage
-      .from('exam-images')
-      .getPublicUrl(filePath);
-
+    const { error: uploadError } = await supabase.storage.from('exam-images').upload(filePath, file);
+    if (uploadError) throw new Error(`Upload failed: ${uploadError.message}`);
+    const { data } = supabase.storage.from('exam-images').getPublicUrl(filePath);
     return data.publicUrl;
   }
-
-  // Mock Fallback: Create a blob URL (Valid only for current session)
-  console.warn("Using Mock Storage (Blob URL). Will not persist.");
   return URL.createObjectURL(file);
 };
 
 export const getExamsForStudent = async (student: User): Promise<Exam[]> => {
   if (supabase) {
-    const { data, error } = await supabase
-      .from('exams')
-      .select('*, questions(*)')
-      .eq('is_active', true);
-
+    const { data, error } = await supabase.from('exams').select('*, questions(*)').eq('is_active', true);
     if (error) return [];
-    
-    // Filter by section (Postgres can do this with array overlap, but filtering here is easier for now)
     const allExams = data.map(mapExam);
     return allExams.filter(e => e.assignedSections.includes(student.section || ''));
   }
-
   return mockExams.filter(e => e.isActive && e.assignedSections.includes(student.section || ''));
 };
 
@@ -254,13 +209,11 @@ export const getExamsForTeacher = async (): Promise<Exam[]> => {
     if (error) return [];
     return data.map(mapExam);
   }
-
   return mockExams;
 };
 
 export const saveExam = async (exam: Exam): Promise<void> => {
   if (supabase) {
-    // 1. Upsert Exam
     const examPayload = {
       title: exam.title,
       description: exam.description,
@@ -268,25 +221,16 @@ export const saveExam = async (exam: Exam): Promise<void> => {
       is_active: exam.isActive,
       assigned_sections: exam.assignedSections
     };
-    
-    // If ID is a valid UUID, include it. If it's a temp ID (e...), let DB generate new one.
-    // However, if we are editing an existing exam, we MUST have the ID.
-    // If we are creating, ID might be 'e17...'
     let examId = exam.id;
     if (exam.id.startsWith('e') && exam.id.length < 20) {
-      // It's a temp ID from the frontend. Create new.
       const { data: newExam, error: createError } = await supabase.from('exams').insert(examPayload).select().single();
       if (createError) throw createError;
       examId = newExam.id;
     } else {
-      // Update existing
       const { error: updateError } = await supabase.from('exams').update(examPayload).eq('id', examId);
       if (updateError) throw updateError;
     }
-
-    // 2. Sync Questions (Delete all and Re-insert is simplest for this scale)
     await supabase.from('questions').delete().eq('exam_id', examId);
-
     if (exam.questions.length > 0) {
       const questionsPayload = exam.questions.map(q => ({
         exam_id: examId,
@@ -304,8 +248,6 @@ export const saveExam = async (exam: Exam): Promise<void> => {
     }
     return;
   }
-
-  // Mock Fallback
   const index = mockExams.findIndex(e => e.id === exam.id);
   if (index >= 0) mockExams[index] = exam;
   else mockExams.push(exam);
@@ -332,17 +274,35 @@ export const updateExamStatus = async (examId: string, isActive: boolean): Promi
 // PROGRESS & RESULTS
 // ==========================================
 
+export const getStudentProgress = async (studentId: string, examId: string): Promise<StudentProgress | null> => {
+  if (supabase) {
+    const { data, error } = await supabase
+      .from('student_progress')
+      .select('*, users!student_progress_student_id_fkey(name)')
+      .eq('student_id', studentId)
+      .eq('exam_id', examId)
+      .single();
+    if (error || !data) return null;
+    return mapProgress(data, data.users?.name);
+  }
+  return mockProgressStore.find(p => p.studentId === studentId && p.examId === examId) || null;
+}
+
 export const submitStudentProgress = async (progress: StudentProgress) => {
   if (supabase) {
-    const { error } = await supabase.from('student_progress').upsert({
+    const payload: any = {
       student_id: progress.studentId,
       exam_id: progress.examId,
       current_question_index: progress.currentQuestionIndex,
       answers: progress.answers,
       status: progress.status,
       updated_at: new Date().toISOString()
-    }, { onConflict: 'student_id, exam_id' });
-    
+    };
+    if (progress.startedAt) {
+      payload.started_at = new Date(progress.startedAt).toISOString();
+    }
+
+    const { error } = await supabase.from('student_progress').upsert(payload, { onConflict: 'student_id, exam_id' });
     if (error) console.error("Progress Sync Error:", error);
     return;
   }
@@ -357,14 +317,11 @@ export const submitStudentProgress = async (progress: StudentProgress) => {
 
 export const getLiveProgress = async (examId: string): Promise<StudentProgress[]> => {
   if (supabase) {
-    // We need student names, so we join users
     const { data, error } = await supabase
       .from('student_progress')
       .select('*, users!student_progress_student_id_fkey(name)')
       .eq('exam_id', examId);
-      
     if (error || !data) return [];
-    
     return data.map((p: any) => mapProgress(p, p.users?.name));
   }
   return mockProgressStore.filter(p => p.examId === examId);
@@ -386,11 +343,9 @@ export const getExamResults = async (examId: string): Promise<ExamResult[]> => {
   let userLookup: (id: string) => User | undefined;
 
   if (supabase) {
-     // Fetch Exam
      const { data: eData } = await supabase.from('exams').select('*, questions(*)').eq('id', examId).single();
      if(eData) exam = mapExam(eData);
 
-     // Fetch Progress with User details
      const { data: pData } = await supabase
       .from('student_progress')
       .select('*, users!student_progress_student_id_fkey(name, section)')
@@ -398,7 +353,6 @@ export const getExamResults = async (examId: string): Promise<ExamResult[]> => {
      
      if(pData) {
        progressList = pData.map((p: any) => mapProgress(p, p.users?.name));
-       // Helper to get section attached to progress query
        userLookup = (sid) => {
          const found = pData.find((p:any) => p.student_id === sid);
          return found ? { ...found.users, id: 'temp', role: UserRole.STUDENT } : undefined;
@@ -414,14 +368,12 @@ export const getExamResults = async (examId: string): Promise<ExamResult[]> => {
 
   return progressList.map(p => {
     const student = userLookup(p.studentId);
-    
     let totalScore = 0;
     let maxScore = 0;
 
     exam!.questions.forEach(q => {
       maxScore += q.score;
       const ans = p.answers[q.id];
-      
       if (ans !== undefined && ans !== null && ans !== '') {
         if (q.type === QuestionType.MULTIPLE_CHOICE) {
            if (ans === q.correctOptionIndex) totalScore += q.score;
@@ -446,7 +398,6 @@ export const getExamResults = async (examId: string): Promise<ExamResult[]> => {
 };
 
 export const compileJavaCode = async (code: string, testCases: {input: string, output: string}[]): Promise<{passed: boolean, output: string}> => {
-  // Mock Compiler Service (Frontend Only)
   return new Promise((resolve) => {
     setTimeout(() => {
       const passed = code.length > 20 && !code.includes('error');

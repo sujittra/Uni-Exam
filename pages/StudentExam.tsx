@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { User, Exam, Question, QuestionType, StudentProgress } from '../types';
-import { getExamsForStudent, submitStudentProgress, compileJavaCode } from '../services/dataService';
+import { getExamsForStudent, submitStudentProgress, compileJavaCode, getStudentProgress } from '../services/dataService';
 import { Button } from '../components/Button';
 import { Card } from '../components/Card';
 
@@ -11,59 +11,98 @@ interface StudentExamProps {
 
 export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
   const [availableExams, setAvailableExams] = useState<Exam[]>([]);
+  const [examStatuses, setExamStatuses] = useState<Record<string, StudentProgress>>({});
+  
   const [activeExam, setActiveExam] = useState<Exam | null>(null);
   const [currentQuestionIdx, setCurrentQuestionIdx] = useState(0);
   const [answers, setAnswers] = useState<Record<string, any>>({});
   const [timeLeft, setTimeLeft] = useState(0);
+  const [examStartTime, setExamStartTime] = useState<number>(0);
+  
+  // UI State
+  const [showTOS, setShowTOS] = useState<Exam | null>(null);
   
   // Compiler State
   const [codeOutput, setCodeOutput] = useState<string>('');
   const [isCompiling, setIsCompiling] = useState(false);
 
   useEffect(() => {
-    loadExams();
+    loadExamsAndStatus();
   }, []);
 
   useEffect(() => {
-    if (activeExam && timeLeft > 0) {
+    if (activeExam && examStartTime > 0) {
       const timer = setInterval(() => {
-        setTimeLeft(prev => {
-           if(prev <= 1) {
-             finishExam();
-             return 0;
-           }
-           return prev - 1;
-        });
-        // Sync progress every 30 seconds
-        if(timeLeft % 30 === 0) syncProgress();
+        // Calculate remaining based on wall-clock time
+        const now = Date.now();
+        const elapsedSeconds = Math.floor((now - examStartTime) / 1000);
+        const durationSeconds = activeExam.durationMinutes * 60;
+        const remaining = durationSeconds - elapsedSeconds;
+
+        if (remaining <= 0) {
+          setTimeLeft(0);
+          finishExam(true); // Force finish
+          clearInterval(timer);
+        } else {
+          setTimeLeft(remaining);
+          // Sync progress every 30 seconds
+          if (remaining % 30 === 0) {
+             syncProgress(activeExam.id, currentQuestionIdx, answers, 'IN_PROGRESS', examStartTime);
+          }
+        }
       }, 1000);
       return () => clearInterval(timer);
     }
-  }, [activeExam, timeLeft]);
+  }, [activeExam, examStartTime, answers]);
 
-  const loadExams = async () => {
+  const loadExamsAndStatus = async () => {
     const exams = await getExamsForStudent(user);
     setAvailableExams(exams);
+    
+    // Check status for each exam (for Resume/Completed buttons)
+    const statuses: Record<string, StudentProgress> = {};
+    for (const exam of exams) {
+       const prog = await getStudentProgress(user.studentId!, exam.id);
+       if (prog) statuses[exam.id] = prog;
+    }
+    setExamStatuses(statuses);
   };
 
-  const startExam = (exam: Exam) => {
+  const initExamSession = async (exam: Exam) => {
+    // Check if we have progress
+    const existingProgress = examStatuses[exam.id];
+    
+    let startTime = Date.now();
+    let startIdx = 0;
+    let savedAnswers = {};
+
+    if (existingProgress && existingProgress.status === 'IN_PROGRESS' && existingProgress.startedAt) {
+      startTime = existingProgress.startedAt;
+      startIdx = existingProgress.currentQuestionIndex;
+      savedAnswers = existingProgress.answers;
+      console.log("Resuming exam from", new Date(startTime).toLocaleTimeString());
+    } else {
+      // First time start
+      await syncProgress(exam.id, 0, {}, 'IN_PROGRESS', startTime);
+    }
+
+    setExamStartTime(startTime);
+    setCurrentQuestionIdx(startIdx);
+    setAnswers(savedAnswers);
     setActiveExam(exam);
-    setTimeLeft(exam.durationMinutes * 60);
-    setCurrentQuestionIdx(0);
-    setAnswers({});
-    syncProgress(exam.id, 0, {}, 'IN_PROGRESS');
+    setShowTOS(null);
   };
 
-  const syncProgress = (examId = activeExam?.id, idx = currentQuestionIdx, currAnswers = answers, status: 'IN_PROGRESS' | 'COMPLETED' = 'IN_PROGRESS') => {
-    if (!examId) return;
+  const syncProgress = (examId: string, idx: number, currAnswers: any, status: 'IN_PROGRESS' | 'COMPLETED', startedAt: number) => {
     const progress: StudentProgress = {
       studentId: user.studentId!,
       studentName: user.name,
       examId: examId,
       currentQuestionIndex: idx,
       answers: currAnswers,
-      score: 0, // Calculated on backend usually
+      score: 0,
       status,
+      startedAt: startedAt,
       lastUpdated: Date.now()
     };
     submitStudentProgress(progress);
@@ -77,10 +116,7 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
   const runCode = async (code: string, question: Question) => {
     setIsCompiling(true);
     setCodeOutput('Compiling and Running Tests...');
-    
-    // Simulate API call to Java Compiler
     const result = await compileJavaCode(code, question.testCases || []);
-    
     setCodeOutput(result.output);
     setIsCompiling(false);
   };
@@ -89,16 +125,28 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
     if (currentQuestionIdx < activeExam!.questions.length - 1) {
       const nextIdx = currentQuestionIdx + 1;
       setCurrentQuestionIdx(nextIdx);
-      syncProgress(activeExam!.id, nextIdx, answers);
-      setCodeOutput(''); // Reset output for next Q
+      syncProgress(activeExam!.id, nextIdx, answers, 'IN_PROGRESS', examStartTime);
+      setCodeOutput(''); 
     }
   };
 
-  const finishExam = () => {
-    syncProgress(activeExam!.id, currentQuestionIdx, answers, 'COMPLETED');
-    alert('Exam Submitted Successfully!');
+  const prevQuestion = () => {
+    if (currentQuestionIdx > 0) {
+      const prevIdx = currentQuestionIdx - 1;
+      setCurrentQuestionIdx(prevIdx);
+      // Optional: sync on back? Maybe not strictly necessary to save bandwidth, 
+      // but good for state consistency.
+    }
+  };
+
+  const finishExam = (force = false) => {
+    if (!force && !window.confirm("Are you sure you want to submit? You cannot undo this action.")) {
+      return;
+    }
+    syncProgress(activeExam!.id, currentQuestionIdx, answers, 'COMPLETED', examStartTime);
+    if(!force) alert('Exam Submitted Successfully!');
     setActiveExam(null);
-    loadExams(); // Refresh list
+    loadExamsAndStatus(); // Refresh list
   };
 
   const formatTime = (seconds: number) => {
@@ -107,11 +155,17 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
     return `${m}:${s < 10 ? '0' : ''}${s}`;
   };
 
-  // --- RENDER ---
+  // --- RENDER EXAM ---
 
   if (activeExam) {
     const question = activeExam.questions[currentQuestionIdx];
     const isLast = currentQuestionIdx === activeExam.questions.length - 1;
+    const isFirst = currentQuestionIdx === 0;
+
+    // Layout Logic:
+    // If MCQ: Use single column (Left panel takes full width, Right panel hidden)
+    // If Others: Use split columns
+    const isMCQ = question.type === QuestionType.MULTIPLE_CHOICE;
 
     return (
       <div className="min-h-screen bg-gray-100 flex flex-col h-screen overflow-hidden">
@@ -128,23 +182,25 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
                   {formatTime(timeLeft)}
                 </span>
              </div>
-             <Button variant="danger" size="sm" onClick={finishExam}>Submit Exam</Button>
+             <Button variant="danger" size="sm" onClick={() => finishExam(false)}>Submit Exam</Button>
           </div>
         </header>
 
-        <div className="flex flex-1 overflow-hidden">
-          {/* Question Panel */}
-          <div className="w-1/3 bg-white border-r border-gray-200 overflow-y-auto p-6">
+        <div className="flex flex-1 overflow-hidden relative">
+          
+          {/* Main Question Area */}
+          <div className={`${isMCQ ? 'w-full max-w-4xl mx-auto' : 'w-1/2 border-r border-gray-200'} bg-white overflow-y-auto p-6 transition-all duration-300`}>
             {question.imageUrl && (
-              <img src={question.imageUrl} alt="Question Illustration" className="w-full h-auto rounded-lg mb-4 object-contain max-h-64 border border-gray-100" />
+              <img src={question.imageUrl} alt="Question Illustration" className="w-full h-auto rounded-lg mb-6 object-contain max-h-[400px] border border-gray-100 bg-gray-50" />
             )}
             
-            <h2 className="text-lg font-semibold text-gray-800 mb-4 whitespace-pre-wrap">{question.text}</h2>
+            <h2 className="text-xl font-semibold text-gray-800 mb-6 whitespace-pre-wrap leading-relaxed">{question.text}</h2>
             
-            {question.type === QuestionType.MULTIPLE_CHOICE && (
-              <div className="space-y-3">
+            {/* MCQ Options displayed inline for Full Width */}
+            {isMCQ && (
+              <div className="space-y-3 mt-8 max-w-2xl mx-auto">
                 {question.options?.map((opt, idx) => (
-                  <label key={idx} className={`block p-4 rounded-lg border-2 cursor-pointer transition-all ${answers[question.id] === idx ? 'border-purple-500 bg-purple-50' : 'border-gray-200 hover:border-purple-200'}`}>
+                  <label key={idx} className={`block p-4 rounded-xl border-2 cursor-pointer transition-all ${answers[question.id] === idx ? 'border-purple-600 bg-purple-50 ring-2 ring-purple-200' : 'border-gray-200 hover:border-purple-300 hover:bg-gray-50'}`}>
                     <input 
                       type="radio" 
                       name="option" 
@@ -152,28 +208,29 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
                       checked={answers[question.id] === idx}
                       onChange={() => handleAnswer(idx)}
                     />
-                    <div className="flex items-center gap-3">
-                      <span className={`w-6 h-6 rounded-full flex items-center justify-center border text-xs ${answers[question.id] === idx ? 'bg-purple-500 border-purple-500 text-white' : 'border-gray-400 text-gray-500'}`}>
+                    <div className="flex items-center gap-4">
+                      <span className={`w-8 h-8 rounded-full flex items-center justify-center border-2 font-bold text-sm ${answers[question.id] === idx ? 'bg-purple-600 border-purple-600 text-white' : 'border-gray-300 text-gray-500'}`}>
                         {String.fromCharCode(65 + idx)}
                       </span>
-                      <span className="text-gray-700">{opt}</span>
+                      <span className="text-lg text-gray-700">{opt}</span>
                     </div>
                   </label>
                 ))}
               </div>
             )}
 
+            {/* Hint for Java Code */}
             {question.type === QuestionType.JAVA_CODE && (
               <div className="bg-blue-50 p-4 rounded-lg border border-blue-100 text-sm text-blue-800 mb-4">
-                <h4 className="font-bold mb-1">Requirements:</h4>
-                <ul className="list-disc pl-4 space-y-1">
-                  <li>Language: Java 17</li>
-                  <li>Check the test cases below for expected I/O.</li>
-                </ul>
+                 <h4 className="font-bold mb-1">Requirements:</h4>
+                 <ul className="list-disc pl-4 space-y-1">
+                   <li>Language: Java 17</li>
+                   <li>Check the test cases below for expected I/O.</li>
+                 </ul>
               </div>
             )}
-            
-             {/* Test Cases Display for Code */}
+
+             {/* Test Cases for Code */}
              {question.type === QuestionType.JAVA_CODE && question.testCases && (
                <div className="mt-6">
                  <h4 className="text-sm font-bold text-gray-600 mb-2">Test Cases</h4>
@@ -189,74 +246,98 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
              )}
           </div>
 
-          {/* Answer Area (Right Panel) */}
-          <div className="flex-1 bg-gray-50 flex flex-col">
-            
-            {/* Java Code Editor */}
-            {question.type === QuestionType.JAVA_CODE && (
-              <div className="flex-1 flex flex-col p-4">
-                <div className="flex justify-between items-center mb-2">
-                  <span className="text-sm font-bold text-gray-500">Main.java</span>
-                  <Button size="sm" onClick={() => runCode(answers[question.id] || '', question)} disabled={isCompiling}>
-                    {isCompiling ? 'Running...' : 'Run & Test'}
-                  </Button>
+          {/* Right Panel (Input Area for Short Answer / Code) - Hidden for MCQ */}
+          {!isMCQ && (
+            <div className="flex-1 bg-gray-50 flex flex-col shadow-inner">
+              
+              {/* Java Code Editor */}
+              {question.type === QuestionType.JAVA_CODE && (
+                <div className="flex-1 flex flex-col p-4">
+                  <div className="flex justify-between items-center mb-2">
+                    <span className="text-sm font-bold text-gray-500">Main.java</span>
+                    <Button size="sm" onClick={() => runCode(answers[question.id] || '', question)} disabled={isCompiling}>
+                      {isCompiling ? 'Running...' : 'Run & Test'}
+                    </Button>
+                  </div>
+                  <textarea
+                    className="flex-1 w-full bg-[#1e1e1e] text-gray-100 font-mono p-4 rounded-lg focus:outline-none resize-none text-sm shadow-md"
+                    placeholder={`public class Main {\n  public static void main(String[] args) {\n    // Write your code here\n  }\n}`}
+                    value={answers[question.id] || ''}
+                    onChange={(e) => handleAnswer(e.target.value)}
+                    spellCheck={false}
+                  />
+                  <div className="h-32 bg-black text-green-400 font-mono text-sm p-4 mt-4 rounded-lg overflow-y-auto border border-gray-700 shadow-md">
+                     <div className="text-gray-500 text-xs border-b border-gray-700 pb-1 mb-1">Console Output</div>
+                     <pre>{codeOutput || '> Ready to compile...'}</pre>
+                  </div>
                 </div>
-                <textarea
-                  className="flex-1 w-full bg-[#1e1e1e] text-gray-100 font-mono p-4 rounded-lg focus:outline-none resize-none text-sm"
-                  placeholder={`public class Main {\n  public static void main(String[] args) {\n    // Write your code here\n  }\n}`}
-                  value={answers[question.id] || ''}
-                  onChange={(e) => handleAnswer(e.target.value)}
-                  spellCheck={false}
-                />
-                <div className="h-32 bg-black text-green-400 font-mono text-sm p-4 mt-4 rounded-lg overflow-y-auto border border-gray-700">
-                   <div className="text-gray-500 text-xs border-b border-gray-700 pb-1 mb-1">Console Output</div>
-                   <pre>{codeOutput || '> Ready to compile...'}</pre>
-                </div>
-              </div>
-            )}
+              )}
 
-            {/* Short Answer Input */}
-            {question.type === QuestionType.SHORT_ANSWER && (
-              <div className="flex-1 flex flex-col justify-center items-center p-8">
-                <div className="w-full max-w-2xl">
-                   <label className="block text-gray-700 font-bold mb-3">Your Answer</label>
-                   <textarea
-                     className="w-full p-6 border-2 border-gray-200 rounded-xl focus:ring-4 focus:ring-purple-100 focus:border-purple-500 outline-none transition-all text-lg"
-                     rows={6}
-                     placeholder="Type your answer here..."
-                     value={answers[question.id] || ''}
-                     onChange={(e) => handleAnswer(e.target.value)}
-                   />
-                   <p className="mt-3 text-sm text-gray-400">Please answer concisely.</p>
+              {/* Short Answer Input */}
+              {question.type === QuestionType.SHORT_ANSWER && (
+                <div className="flex-1 flex flex-col justify-center items-center p-8">
+                  <div className="w-full max-w-xl">
+                     <label className="block text-gray-700 font-bold mb-3 text-lg">Your Answer</label>
+                     <textarea
+                       className="w-full p-6 border-2 border-gray-200 rounded-xl focus:ring-4 focus:ring-purple-100 focus:border-purple-500 outline-none transition-all text-lg shadow-sm"
+                       rows={6}
+                       placeholder="Type your answer here..."
+                       value={answers[question.id] || ''}
+                       onChange={(e) => handleAnswer(e.target.value)}
+                     />
+                     <p className="mt-3 text-sm text-gray-400">Please answer concisely.</p>
+                  </div>
                 </div>
-              </div>
-            )}
-            
-            {/* Empty State for MCQ (since answers are on left) */}
-            {question.type === QuestionType.MULTIPLE_CHOICE && (
-              <div className="flex-1 flex items-center justify-center text-gray-400 select-none">
-                <div className="text-center">
-                  <span className="text-6xl opacity-20 block mb-4">✍️</span>
-                  <p>Select the best option from the left panel.</p>
-                </div>
-              </div>
-            )}
-            
-            {/* Footer Navigation */}
-            <div className="bg-white p-4 border-t border-gray-200 flex justify-end">
-               {isLast ? (
-                  <Button variant="danger" onClick={finishExam}>Finish & Submit</Button>
-               ) : (
-                  <Button onClick={nextQuestion}>Next Question &rarr;</Button>
-               )}
+              )}
             </div>
-          </div>
+          )}
+        </div>
+        
+        {/* Footer Navigation */}
+        <div className="bg-white p-4 border-t border-gray-200 flex justify-between items-center px-8 z-20">
+            <Button 
+              variant="outline" 
+              onClick={prevQuestion} 
+              disabled={isFirst}
+              className={isFirst ? "opacity-0 pointer-events-none" : ""}
+            >
+              &larr; Previous
+            </Button>
+            
+            {isLast ? (
+                <Button variant="danger" onClick={() => finishExam(false)}>Finish & Submit</Button>
+            ) : (
+                <Button onClick={nextQuestion}>Next Question &rarr;</Button>
+            )}
         </div>
       </div>
     );
   }
 
-  // Lobby View
+  // --- TOS MODAL ---
+  if (showTOS) {
+    return (
+      <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+        <Card className="max-w-md w-full animate-fade-in" title="Examination Rules">
+          <div className="space-y-4 text-gray-700 mb-6">
+            <p>Please read the following rules carefully before starting:</p>
+            <ul className="list-disc pl-5 space-y-2 text-sm">
+              <li>Once you click <strong>"I Agree & Start"</strong>, the timer will begin immediately.</li>
+              <li><strong>Do not close the browser.</strong> The timer continues to run on the server even if you disconnect.</li>
+              <li>If you lose connection, you can log back in and resume, but the time lost cannot be recovered.</li>
+              <li>Submitting the exam is <strong>final</strong>. You cannot re-enter.</li>
+            </ul>
+          </div>
+          <div className="flex flex-col gap-3">
+            <Button onClick={() => initExamSession(showTOS)} className="w-full py-3">I Agree & Start Exam</Button>
+            <button onClick={() => setShowTOS(null)} className="text-gray-500 text-sm hover:underline">Cancel</button>
+          </div>
+        </Card>
+      </div>
+    );
+  }
+
+  // --- LOBBY ---
   return (
     <div className="min-h-screen bg-purple-50">
        <nav className="bg-white shadow-sm p-4 sticky top-0 z-10">
@@ -283,16 +364,33 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
            </Card>
          ) : (
            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-             {availableExams.map(exam => (
-               <Card key={exam.id} title={exam.title} className="hover:ring-2 hover:ring-purple-300 transition-all">
-                  <div className="mb-4 text-gray-600 text-sm h-12 overflow-hidden">{exam.description}</div>
-                  <div className="flex items-center gap-4 text-sm text-gray-500 mb-6">
-                    <span className="flex items-center gap-1">⏱ {exam.durationMinutes} mins</span>
-                    <span className="flex items-center gap-1">📝 {exam.questions.length} Questions</span>
-                  </div>
-                  <Button className="w-full" onClick={() => startExam(exam)}>Start Exam</Button>
-               </Card>
-             ))}
+             {availableExams.map(exam => {
+               const status = examStatuses[exam.id]?.status || 'IDLE';
+               const isCompleted = status === 'COMPLETED';
+               const isResume = status === 'IN_PROGRESS';
+
+               return (
+                 <Card key={exam.id} title={exam.title} className={`transition-all ${isCompleted ? 'opacity-70 grayscale' : 'hover:ring-2 hover:ring-purple-300'}`}>
+                    <div className="mb-4 text-gray-600 text-sm h-12 overflow-hidden">{exam.description}</div>
+                    <div className="flex items-center gap-4 text-sm text-gray-500 mb-6">
+                      <span className="flex items-center gap-1">⏱ {exam.durationMinutes} mins</span>
+                      <span className="flex items-center gap-1">📝 {exam.questions.length} Questions</span>
+                    </div>
+                    
+                    {isCompleted ? (
+                       <Button className="w-full" disabled variant="secondary">Exam Completed</Button>
+                    ) : (
+                       <Button 
+                         className="w-full" 
+                         variant={isResume ? 'outline' : 'primary'}
+                         onClick={() => isResume ? initExamSession(exam) : setShowTOS(exam)}
+                       >
+                         {isResume ? 'Resume Exam' : 'Start Exam'}
+                       </Button>
+                    )}
+                 </Card>
+               );
+             })}
            </div>
          )}
        </div>

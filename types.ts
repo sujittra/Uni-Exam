@@ -55,5 +55,6 @@ export interface StudentProgress {
   answers: Record<string, any>; // questionId -> answer
   score: number;
   status: 'IDLE' | 'IN_PROGRESS' | 'COMPLETED';
+  startedAt?: number; // Timestamp when student started the exam
   lastUpdated: number;
 }
