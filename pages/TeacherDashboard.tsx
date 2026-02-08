@@ -237,7 +237,6 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ user, onLogo
   // --- RENDER ---
 
   if (editingExam) {
-     // (Editor Code same as before - reusing existing logic for brevity but ensuring imports/funcs are there)
      return (
       <div className="min-h-screen bg-gray-100 pb-20">
          <div className="bg-white shadow sticky top-0 z-50 border-b border-gray-200">
@@ -305,6 +304,7 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ user, onLogo
                            </div>
                            <div className="w-24"><input type="number" className="w-full p-2 border border-gray-300 rounded text-center" value={q.score} onChange={(e) => updateQuestion(q.id, { score: Number(e.target.value) })} placeholder="Score"/></div>
                          </div>
+                         
                          {/* MCQ Options */}
                          {q.type === QuestionType.MULTIPLE_CHOICE && (
                            <div className="space-y-2 bg-gray-50 p-3 rounded">
@@ -318,9 +318,56 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ user, onLogo
                              <Button size="sm" variant="secondary" onClick={() => updateQuestion(q.id, { options: [...(q.options||[]), `Option ${(q.options?.length||0)+1}`] })}>+ Add Option</Button>
                            </div>
                          )}
-                         {/* Other Types (Short Answer / Java) - simplified for brevity in this view */}
-                         {q.type === QuestionType.SHORT_ANSWER && <div className="p-3 bg-gray-50 rounded text-sm text-gray-500">Short Answer Settings...</div>}
-                         {q.type === QuestionType.JAVA_CODE && <div className="p-3 bg-blue-50 rounded text-sm text-blue-500">Java Test Cases Settings...</div>}
+
+                         {/* Short Answer Specifics - RESTORED */}
+                         {q.type === QuestionType.SHORT_ANSWER && (
+                           <div className="space-y-2 bg-gray-50 p-3 rounded">
+                              <p className="text-xs font-bold text-gray-500 uppercase">Accepted Answers</p>
+                              <textarea 
+                                className="w-full p-2 border rounded text-sm" 
+                                placeholder="Enter acceptable answers separated by commas (e.g. Java, java, JAVA)"
+                                value={q.acceptedAnswers?.join(', ')}
+                                onChange={(e) => updateQuestion(q.id, { acceptedAnswers: e.target.value.split(',').map(s => s.trim()) })}
+                              />
+                           </div>
+                         )}
+
+                         {/* Java Code Specifics - RESTORED */}
+                         {q.type === QuestionType.JAVA_CODE && (
+                           <div className="space-y-2 bg-blue-50 p-3 rounded border border-blue-100">
+                              <p className="text-xs font-bold text-blue-700 uppercase">Test Cases (Input / Output)</p>
+                              {q.testCases?.map((tc, tcIdx) => (
+                                <div key={tcIdx} className="grid grid-cols-2 gap-2 mb-2">
+                                   <input 
+                                     className="p-1 border rounded text-sm font-mono" placeholder="Input"
+                                     value={tc.input}
+                                     onChange={(e) => {
+                                        const newTC = [...(q.testCases || [])];
+                                        newTC[tcIdx] = { ...newTC[tcIdx], input: e.target.value };
+                                        updateQuestion(q.id, { testCases: newTC });
+                                     }}
+                                   />
+                                   <div className="flex gap-1">
+                                      <input 
+                                        className="flex-1 p-1 border rounded text-sm font-mono" placeholder="Expected Output"
+                                        value={tc.output}
+                                        onChange={(e) => {
+                                            const newTC = [...(q.testCases || [])];
+                                            newTC[tcIdx] = { ...newTC[tcIdx], output: e.target.value };
+                                            updateQuestion(q.id, { testCases: newTC });
+                                        }}
+                                      />
+                                      <button onClick={() => {
+                                         const newTC = q.testCases?.filter((_, i) => i !== tcIdx);
+                                         updateQuestion(q.id, { testCases: newTC });
+                                      }} className="text-red-400 font-bold px-2">×</button>
+                                   </div>
+                                </div>
+                              ))}
+                              <Button size="sm" variant="secondary" onClick={() => updateQuestion(q.id, { testCases: [...(q.testCases||[]), {input:'', output:''}] })}>+ Add Test Case</Button>
+                           </div>
+                         )}
+
                       </div>
                    </div>
                 </Card>
