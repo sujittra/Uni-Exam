@@ -398,24 +398,31 @@ export const getStudentProgress = async (studentId: string, examId: string): Pro
 
 export const submitStudentProgress = async (progress: StudentProgress): Promise<{success: boolean, error?: string}> => {
   if (supabase) {
-    const payload: any = {
-      student_id: progress.studentId,
-      exam_id: progress.examId,
-      current_question_index: progress.currentQuestionIndex,
-      answers: progress.answers || {}, // Force object
-      status: progress.status,
-      updated_at: new Date().toISOString()
-    };
-    if (progress.startedAt) {
-      payload.started_at = new Date(progress.startedAt).toISOString();
-    }
+    try {
+      const payload: any = {
+        student_id: progress.studentId,
+        exam_id: progress.examId,
+        current_question_index: progress.currentQuestionIndex,
+        answers: progress.answers || {}, // Force object
+        status: progress.status,
+        updated_at: new Date().toISOString()
+      };
+      if (progress.startedAt) {
+        payload.started_at = new Date(progress.startedAt).toISOString();
+      }
 
-    const { error } = await supabase.from('student_progress').upsert(payload, { onConflict: 'student_id, exam_id' });
-    if (error) {
-       console.error("Progress Sync Error:", error);
-       return { success: false, error: error.message };
+      const { error } = await supabase.from('student_progress').upsert(payload, { onConflict: 'student_id, exam_id' });
+      
+      if (error) {
+        // Detailed Error Logging
+        console.error("SUPABASE UPLOAD ERROR:", error);
+        return { success: false, error: `${error.code}: ${error.message} (${error.details || ''})` };
+      }
+      return { success: true };
+    } catch (e: any) {
+      console.error("UNEXPECTED ERROR:", e);
+      return { success: false, error: e.message };
     }
-    return { success: true };
   }
 
   const mockProgressStore = getMockProgress();

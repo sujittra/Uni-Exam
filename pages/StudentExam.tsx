@@ -83,6 +83,8 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
           const result = await submitStudentProgress(localProg);
           if (result.success) {
              dbProg = await getStudentProgress(user.studentId!, exam.id);
+          } else {
+             console.error("Auto-sync failed:", result.error);
           }
           setSyncingStatus(null);
        }
@@ -166,8 +168,9 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
     saveToLocal(examId, idx, finalAnswers, startedAt, status);
     const result = await submitStudentProgress(progress); 
     if (!result.success && !silent) {
-        alert("Warning: Failed to save progress to server. Check your connection.");
+        alert(`Sync Error: ${result.error || 'Connection Failed'}\nYour progress is saved locally. We will retry.`);
     }
+    return result;
   };
 
   const saveToLocal = (examId: string, idx: number, currAnswers: any, startedAt: number, status: string) => {
@@ -234,21 +237,24 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
     
     setSyncingStatus("Submitting...");
     // Use Ref to ensure absolute latest state is sent
-    await syncProgress(activeExam.id, currentQuestionIdx, answersRef.current, 'COMPLETED', examStartTime);
+    const result = await syncProgress(activeExam.id, currentQuestionIdx, answersRef.current, 'COMPLETED', examStartTime);
     setSyncingStatus(null);
     
-    setExamStatuses(prev => ({
-      ...prev,
-      [activeExam.id]: {
-        ...prev[activeExam.id],
-        status: 'COMPLETED',
-        lastUpdated: Date.now()
-      }
-    }));
-
-    if(!force) alert('Exam Submitted Successfully!');
-    setActiveExam(null);
-    loadExamsAndStatus(); 
+    if (result.success) {
+      setExamStatuses(prev => ({
+        ...prev,
+        [activeExam.id]: {
+          ...prev[activeExam.id],
+          status: 'COMPLETED',
+          lastUpdated: Date.now()
+        }
+      }));
+      if(!force) alert('Exam Submitted Successfully!');
+      setActiveExam(null);
+      loadExamsAndStatus(); 
+    } else {
+      if(!force) alert(`Submission Failed: ${result.error}\nPlease click 'Finish' again or check your internet connection.`);
+    }
   };
 
   const formatTime = (seconds: number) => {
@@ -477,7 +483,7 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
                const isResume = status === 'IN_PROGRESS';
 
                return (
-                 <Card key={exam.id} title={exam.title} className={`transition-all ${isCompleted ? 'opacity-70 grayscale' : 'hover:ring-2 hover:ring-purple-300'}`}>
+                 <Card key={exam.id} title={exam.title} className={`transition-all ${isCompleted ? 'opacity-70' : 'hover:ring-2 hover:ring-purple-300'}`}>
                     <div className="mb-4 text-gray-600 text-sm h-12 overflow-hidden">{exam.description}</div>
                     <div className="flex items-center gap-4 text-sm text-gray-500 mb-6">
                       <span className="flex items-center gap-1">⏱ {exam.durationMinutes} mins</span>
@@ -485,27 +491,32 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
                     </div>
                     
                     {isCompleted ? (
-                       <div className="flex gap-2">
-                         <Button className="w-full" disabled variant="secondary">Exam Completed</Button>
-                         {/* Manual Sync Button if user suspects issue */}
-                         <button 
-                            className="text-xs text-purple-500 underline" 
-                            title="Click if results are missing"
+                       <div className="flex flex-col gap-2">
+                         <div className="w-full bg-gray-100 text-gray-500 text-center py-2 rounded font-medium cursor-not-allowed">
+                            Exam Completed
+                         </div>
+                         <Button
+                            variant="primary" 
+                            size="sm"
+                            className="w-full bg-orange-500 hover:bg-orange-600 border-orange-200 shadow-none"
                             onClick={async () => {
-                               if(window.confirm("Resend results to server?")) {
+                               if(window.confirm("This will force-push your local answers to the server again.\n\nUse this only if your teacher cannot see your results.\n\nContinue?")) {
                                   const localKey = getStorageKey(user.studentId!, exam.id);
                                   const localData = JSON.parse(localStorage.getItem(localKey) || '{}');
-                                  if (localData) {
-                                      setSyncingStatus("Resending...");
-                                      await submitStudentProgress(localData);
+                                  if (localData && localData.status === 'COMPLETED') {
+                                      setSyncingStatus("Force Syncing...");
+                                      const res = await submitStudentProgress(localData);
                                       setSyncingStatus(null);
-                                      alert("Results resent.");
+                                      if (res.success) alert("✅ Sync Successful!");
+                                      else alert(`❌ Sync Failed: ${res.error}`);
+                                  } else {
+                                      alert("No local data found to sync.");
                                   }
                                }
                             }}
                          >
-                           Resync
-                         </button>
+                           ⚠ Force Resync Data
+                         </Button>
                        </div>
                     ) : (
                        <Button 
