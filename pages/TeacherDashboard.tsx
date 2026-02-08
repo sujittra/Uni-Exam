@@ -238,13 +238,19 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ user, onLogo
                       <div className="flex-1 space-y-4">
                          
                          {/* Common Fields */}
-                         <div className="flex gap-4">
-                           <div className="flex-1">
-                              <input 
-                                className="w-full p-2 border border-gray-300 rounded font-medium" 
+                         <div className="flex gap-4 items-start">
+                           <div className="flex-1 space-y-2">
+                              <textarea 
+                                className="w-full p-2 border border-gray-300 rounded font-medium h-24" 
                                 value={q.text} 
                                 onChange={(e) => updateQuestion(q.id, { text: e.target.value })}
-                                placeholder="Enter question text..."
+                                placeholder="Enter question text (multiline supported)..."
+                              />
+                              <input 
+                                className="w-full p-2 border border-gray-300 rounded text-sm"
+                                value={q.imageUrl || ''}
+                                onChange={(e) => updateQuestion(q.id, { imageUrl: e.target.value })}
+                                placeholder="Image URL (optional)... https://..."
                               />
                            </div>
                            <div className="w-24">

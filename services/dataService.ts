@@ -51,6 +51,14 @@ let mockExams: Exam[] = [
           { input: '1 2', output: '3' },
           { input: '10 -5', output: '5' }
         ]
+      },
+      {
+         id: 'q3',
+         type: QuestionType.SHORT_ANSWER,
+         text: 'What is the capital of Thailand?',
+         imageUrl: 'https://upload.wikimedia.org/wikipedia/commons/thumb/f/fa/Wat_Arun_July_2020.jpg/640px-Wat_Arun_July_2020.jpg',
+         score: 5,
+         acceptedAnswers: ['Bangkok', 'Krung Thep']
       }
     ]
   }
@@ -83,6 +91,7 @@ const mapQuestion = (q: any): Question => ({
   id: q.id,
   type: q.type as QuestionType,
   text: q.text,
+  imageUrl: q.image_url,
   score: q.score,
   options: q.options,
   correctOptionIndex: q.correct_option_index,
@@ -254,6 +263,7 @@ export const saveExam = async (exam: Exam): Promise<void> => {
         exam_id: examId,
         type: q.type,
         text: q.text,
+        image_url: q.imageUrl,
         score: q.score,
         options: q.options,
         correct_option_index: q.correctOptionIndex,

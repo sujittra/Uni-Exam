@@ -31,6 +31,7 @@ create table public.questions (
   exam_id uuid references public.exams(id) on delete cascade not null,
   type text not null check (type in ('MCQ', 'JAVA', 'SHORT_ANSWER')), -- Updated Types
   text text not null,
+  image_url text, -- Added Image URL support
   score int not null default 0,
   options text[], -- For MCQ: Array of choices
   correct_option_index int, -- For MCQ: Index of correct choice (0-3)
@@ -83,7 +84,7 @@ BEGIN
   insert into public.questions (exam_id, type, text, score, test_cases)
   values (v_exam_id, 'JAVA', 'Write a Java method named `sum` that takes two integers and returns their sum.', 20, '[{"input": "1 2", "output": "3"}, {"input": "10 -5", "output": "5"}]'::jsonb);
   
-  -- Question 3 (Short Answer)
-  insert into public.questions (exam_id, type, text, score, accepted_answers)
-  values (v_exam_id, 'SHORT_ANSWER', 'What is the keyword to define a class in Java?', 5, array['class', 'Class', 'CLASS']);
+  -- Question 3 (Short Answer with Image)
+  insert into public.questions (exam_id, type, text, image_url, score, accepted_answers)
+  values (v_exam_id, 'SHORT_ANSWER', 'What is the name of this famous temple in Thailand?', 'https://upload.wikimedia.org/wikipedia/commons/thumb/f/fa/Wat_Arun_July_2020.jpg/640px-Wat_Arun_July_2020.jpg', 5, array['Wat Arun', 'Temple of Dawn']);
 END $$;

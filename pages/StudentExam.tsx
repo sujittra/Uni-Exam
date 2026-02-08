@@ -135,7 +135,11 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
         <div className="flex flex-1 overflow-hidden">
           {/* Question Panel */}
           <div className="w-1/3 bg-white border-r border-gray-200 overflow-y-auto p-6">
-            <h2 className="text-lg font-semibold text-gray-800 mb-4">{question.text}</h2>
+            {question.imageUrl && (
+              <img src={question.imageUrl} alt="Question Illustration" className="w-full h-auto rounded-lg mb-4 object-contain max-h-64 border border-gray-100" />
+            )}
+            
+            <h2 className="text-lg font-semibold text-gray-800 mb-4 whitespace-pre-wrap">{question.text}</h2>
             
             {question.type === QuestionType.MULTIPLE_CHOICE && (
               <div className="space-y-3">
@@ -185,9 +189,11 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
              )}
           </div>
 
-          {/* Answer Area */}
+          {/* Answer Area (Right Panel) */}
           <div className="flex-1 bg-gray-50 flex flex-col">
-            {question.type === QuestionType.JAVA_CODE ? (
+            
+            {/* Java Code Editor */}
+            {question.type === QuestionType.JAVA_CODE && (
               <div className="flex-1 flex flex-col p-4">
                 <div className="flex justify-between items-center mb-2">
                   <span className="text-sm font-bold text-gray-500">Main.java</span>
@@ -207,9 +213,32 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
                    <pre>{codeOutput || '> Ready to compile...'}</pre>
                 </div>
               </div>
-            ) : (
-              <div className="flex-1 flex items-center justify-center text-gray-400">
-                Select an option from the left panel.
+            )}
+
+            {/* Short Answer Input */}
+            {question.type === QuestionType.SHORT_ANSWER && (
+              <div className="flex-1 flex flex-col justify-center items-center p-8">
+                <div className="w-full max-w-2xl">
+                   <label className="block text-gray-700 font-bold mb-3">Your Answer</label>
+                   <textarea
+                     className="w-full p-6 border-2 border-gray-200 rounded-xl focus:ring-4 focus:ring-purple-100 focus:border-purple-500 outline-none transition-all text-lg"
+                     rows={6}
+                     placeholder="Type your answer here..."
+                     value={answers[question.id] || ''}
+                     onChange={(e) => handleAnswer(e.target.value)}
+                   />
+                   <p className="mt-3 text-sm text-gray-400">Please answer concisely.</p>
+                </div>
+              </div>
+            )}
+            
+            {/* Empty State for MCQ (since answers are on left) */}
+            {question.type === QuestionType.MULTIPLE_CHOICE && (
+              <div className="flex-1 flex items-center justify-center text-gray-400 select-none">
+                <div className="text-center">
+                  <span className="text-6xl opacity-20 block mb-4">✍️</span>
+                  <p>Select the best option from the left panel.</p>
+                </div>
               </div>
             )}
             

@@ -26,6 +26,7 @@ export interface Question {
   id: string;
   type: QuestionType;
   text: string;
+  imageUrl?: string; // Added image URL support
   score: number;
   // For MCQ
   options?: string[];
