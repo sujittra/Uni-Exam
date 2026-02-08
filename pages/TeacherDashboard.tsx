@@ -72,7 +72,8 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ user, onLogo
   };
 
   const loadStudents = async () => {
-    const data = await getStudents();
+    // Pass user.id to filter students by owner
+    const data = await getStudents(user.id);
     setStudents(data);
   };
 
@@ -116,7 +117,8 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ user, onLogo
         if (!id || !name) throw new Error("Invalid format");
         return { id: id.trim(), name: name.trim(), section: section ? section.trim() : 'General' };
       });
-      await importStudents(data);
+      // Pass user.id as the creator of these students
+      await importStudents(user.id, data);
       setImportStatus(`Success! Imported ${data.length} students.`);
       setImportText('');
       loadStudents();

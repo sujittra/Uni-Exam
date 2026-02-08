@@ -40,8 +40,8 @@ const saveMockData = (key: string, data: any) => {
 // --- DEFAULT DATA SEEDS ---
 const defaultUsers: User[] = [
   { id: 't1', name: 'Dr. Smith', role: UserRole.TEACHER },
-  { id: 's1', name: 'Alice Student', role: UserRole.STUDENT, studentId: '64001', section: 'SEC01' },
-  { id: 's2', name: 'Bob Student', role: UserRole.STUDENT, studentId: '64002', section: 'SEC02' }
+  { id: 's1', name: 'Alice Student', role: UserRole.STUDENT, studentId: '64001', section: 'SEC01', createdBy: 't1' },
+  { id: 's2', name: 'Bob Student', role: UserRole.STUDENT, studentId: '64002', section: 'SEC02', createdBy: 't1' }
 ];
 
 // Seed passwords. NOTE: In a real app, never store plain text passwords in LS.
@@ -103,7 +103,8 @@ const mapUser = (u: any): User => ({
   name: u.name,
   role: u.role as UserRole,
   studentId: u.student_id,
-  section: u.section
+  section: u.section,
+  createdBy: u.created_by
 });
 
 const mapExam = (e: any): Exam => ({
@@ -271,25 +272,44 @@ export const loginStudent = async (studentId: string): Promise<User | null> => {
   return mockUsers.find(u => u.studentId === cleanId && u.role === UserRole.STUDENT) || null;
 };
 
-// NEW: Get all students for Roster view
-export const getStudents = async (): Promise<User[]> => {
+// UPDATED: Get students created by a specific teacher
+export const getStudents = async (teacherId?: string): Promise<User[]> => {
   if (supabase) {
-    const { data, error } = await supabase
+    let query = supabase
       .from('users')
       .select('*')
       .eq('role', 'STUDENT')
       .order('student_id', { ascending: true });
+
+    // Filter by teacher ownership if provided
+    if (teacherId) {
+       query = query.eq('created_by', teacherId);
+    }
       
+    const { data, error } = await query;
     if (error) return [];
     return data.map(mapUser);
   }
-  return getMockUsers().filter(u => u.role === UserRole.STUDENT);
+
+  // Mock
+  const allStudents = getMockUsers().filter(u => u.role === UserRole.STUDENT);
+  if (teacherId) {
+      return allStudents.filter(s => s.createdBy === teacherId || (!s.createdBy && teacherId === 't1'));
+  }
+  return allStudents;
 };
 
-export const importStudents = async (studentData: {id: string, name: string, section: string}[]) => {
+// UPDATED: Import students with teacher ownership
+export const importStudents = async (teacherId: string, studentData: {id: string, name: string, section: string}[]) => {
   if (supabase) {
     const { error } = await supabase.from('users').upsert(
-      studentData.map(s => ({ student_id: s.id, name: s.name, section: s.section, role: 'STUDENT' })),
+      studentData.map(s => ({ 
+          student_id: s.id, 
+          name: s.name, 
+          section: s.section, 
+          role: 'STUDENT',
+          created_by: teacherId // Link student to teacher
+      })),
       { onConflict: 'student_id' }
     );
     if (error) throw new Error("Import failed: " + error.message);
@@ -302,13 +322,17 @@ export const importStudents = async (studentData: {id: string, name: string, sec
     name: s.name,
     studentId: s.id,
     section: s.section,
-    role: UserRole.STUDENT
+    role: UserRole.STUDENT,
+    createdBy: teacherId
   }));
   
-  const existingIds = new Set(mockUsers.map(u => u.studentId));
-  const uniqueNewUsers = newUsers.filter(nu => !existingIds.has(nu.studentId));
+  // Basic mock upsert logic (overwrite if exists)
+  const existingMap = new Map(mockUsers.map(u => [u.studentId || u.id, u]));
+  newUsers.forEach(nu => {
+      existingMap.set(nu.studentId, nu);
+  });
   
-  saveMockData(STORAGE_KEYS.USERS, [...mockUsers, ...uniqueNewUsers]);
+  saveMockData(STORAGE_KEYS.USERS, Array.from(existingMap.values()));
 };
 
 // ==========================================

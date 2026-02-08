@@ -9,6 +9,7 @@ export interface User {
   role: UserRole;
   studentId?: string; // For students
   section?: string; // For students
+  createdBy?: string; // New: Track which teacher imported this student
 }
 
 export enum QuestionType {
