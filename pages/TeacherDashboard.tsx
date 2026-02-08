@@ -66,7 +66,8 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ user, onLogo
   }, [activeTab, monitoringExamId]);
 
   const loadExams = async () => {
-    const data = await getExamsForTeacher();
+    // Pass user.id to filter exams by owner
+    const data = await getExamsForTeacher(user.id);
     setExams([...data]);
   };
 
@@ -84,6 +85,7 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ user, onLogo
       assignedSections: [],
       durationMinutes: 60,
       isActive: false,
+      createdBy: user.id, // Assign ownership to current teacher
       questions: []
     };
     setEditingExam(newExam);

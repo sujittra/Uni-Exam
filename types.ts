@@ -45,6 +45,7 @@ export interface Exam {
   questions: Question[];
   durationMinutes: number;
   isActive: boolean;
+  createdBy?: string; // New: Track which teacher created this exam
 }
 
 export interface StudentProgress {

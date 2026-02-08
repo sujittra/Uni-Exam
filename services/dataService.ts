@@ -56,6 +56,7 @@ const defaultExams: Exam[] = [
     description: 'Fundamental concepts of Java Programming.',
     durationMinutes: 60,
     isActive: true,
+    createdBy: 't1', // Assigned to Dr. Smith
     assignedSections: ['SEC01', 'SEC02'],
     questions: [
       {
@@ -112,6 +113,7 @@ const mapExam = (e: any): Exam => ({
   durationMinutes: e.duration_minutes,
   isActive: e.is_active,
   assignedSections: e.assigned_sections || [],
+  createdBy: e.created_by, // Map DB column
   questions: (e.questions || []).map(mapQuestion).sort((a: Question, b: Question) => a.text.localeCompare(b.text))
 });
 
@@ -341,15 +343,30 @@ export const getExamsForStudent = async (student: User): Promise<Exam[]> => {
   return mockExams.filter(e => e.isActive && e.assignedSections.includes(student.section || ''));
 };
 
-export const getExamsForTeacher = async (): Promise<Exam[]> => {
+// UPDATED: Filter by teacherId
+export const getExamsForTeacher = async (teacherId?: string): Promise<Exam[]> => {
   if (supabase) {
-    const { data, error } = await supabase.from('exams').select('*, questions(*)').order('created_at', { ascending: false });
+    let query = supabase.from('exams').select('*, questions(*)').order('created_at', { ascending: false });
+    
+    // Filter by created_by if teacherId is provided
+    if (teacherId) {
+       query = query.eq('created_by', teacherId);
+    }
+    
+    const { data, error } = await query;
     if (error) return [];
     return data.map(mapExam);
   }
-  return getMockExams();
+  
+  // Mock Data Filtering
+  const mockExams = getMockExams();
+  if (teacherId) {
+     return mockExams.filter(e => e.createdBy === teacherId || (!e.createdBy && teacherId === 't1'));
+  }
+  return mockExams;
 };
 
+// UPDATED: Save created_by
 export const saveExam = async (exam: Exam): Promise<void> => {
   if (supabase) {
     const examPayload = {
@@ -357,7 +374,8 @@ export const saveExam = async (exam: Exam): Promise<void> => {
       description: exam.description,
       duration_minutes: exam.durationMinutes,
       is_active: exam.isActive,
-      assigned_sections: exam.assignedSections
+      assigned_sections: exam.assignedSections,
+      created_by: exam.createdBy // Save ownership
     };
     let examId = exam.id;
     if (exam.id.startsWith('e') && exam.id.length < 20) {
