@@ -397,20 +397,95 @@ export const getExamResults = async (examId: string): Promise<ExamResult[]> => {
   });
 };
 
+// ==========================================
+// REAL REMOTE COMPILER (via Piston API)
+// ==========================================
+// Using Piston API (https://github.com/engineer-man/piston) for real Java execution
+const PISTON_API_URL = "https://emkc.org/api/v2/piston/execute";
+
 export const compileJavaCode = async (code: string, testCases: {input: string, output: string}[]): Promise<{passed: boolean, output: string}> => {
-  return new Promise((resolve) => {
-    setTimeout(() => {
-      const passed = code.length > 20 && !code.includes('error');
-      let outputDetails = "";
-      if (passed) {
-        outputDetails = "BUILD SUCCESSFUL\n\n";
-        testCases.forEach((tc, i) => {
-          outputDetails += `Test Case ${i + 1}: Input [${tc.input}] -> Expected [${tc.output}] -> Actual [${tc.output}] (PASS)\n`;
-        });
-      } else {
-         outputDetails = "BUILD FAILED\n\nError: Syntax error or compilation failed.";
+  if (!code.trim()) {
+      return { passed: false, output: "Error: Code is empty." };
+  }
+
+  let finalOutputDetails = "";
+  let allPassed = true;
+
+  // We must run test cases sequentially or in parallel against the remote server
+  // Piston is stateless, so we send the code every time.
+  
+  // Wrap code in Main class if not present to help the compiler
+  // (Piston handles files well, but ensuring a class structure helps beginners)
+  // However, usually Piston runs whatever file name is given. We'll default to 'Main.java'.
+
+  const runTestCase = async (input: string, expected: string, index: number) => {
+      try {
+          const response = await fetch(PISTON_API_URL, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                  language: "java",
+                  version: "15.0.2", // Or latest available
+                  files: [
+                      {
+                          name: "Main.java",
+                          content: code
+                      }
+                  ],
+                  stdin: input,
+                  compile_timeout: 10000,
+                  run_timeout: 3000
+              })
+          });
+
+          const result = await response.json();
+          
+          if (result.compile && result.compile.code !== 0) {
+              return { 
+                  success: false, 
+                  output: `[Compilation Error]\n${result.compile.stderr || result.compile.stdout}` 
+              };
+          }
+
+          if (result.run && result.run.code !== 0 && result.run.signal !== null) {
+              return {
+                  success: false,
+                  output: `[Runtime Error]\n${result.run.stderr || result.run.stdout}`
+              };
+          }
+
+          // Output from stdout
+          const actualOutput = result.run.stdout ? result.run.stdout.trim() : "";
+          const normalizedExpected = expected.replace(/\r\n/g, '\n').trim();
+          const normalizedActual = actualOutput.replace(/\r\n/g, '\n').trim();
+
+          const passed = normalizedActual === normalizedExpected;
+
+          return {
+              success: true,
+              passed: passed,
+              details: `Test Case ${index + 1}: Input [${input}] -> Expected [${normalizedExpected}] -> Actual [${normalizedActual}] (${passed ? 'PASS' : 'FAIL'})`
+          };
+
+      } catch (error: any) {
+          return { success: false, output: `System Error: ${error.message}` };
       }
-      resolve({ passed, output: outputDetails });
-    }, 1500);
-  });
+  };
+
+  finalOutputDetails += "Compiling and Running on Remote Server...\n\n";
+
+  for (let i = 0; i < testCases.length; i++) {
+      const tc = testCases[i];
+      const result = await runTestCase(tc.input, tc.output, i);
+
+      if (!result.success) {
+          finalOutputDetails += result.output + "\n";
+          return { passed: false, output: finalOutputDetails };
+      }
+
+      finalOutputDetails += result.details + "\n";
+      if (!result.passed) allPassed = false;
+  }
+
+  return { passed: allPassed, output: finalOutputDetails };
 };
