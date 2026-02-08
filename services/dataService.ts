@@ -141,7 +141,7 @@ const safeParseJSON = (input: any) => {
 };
 
 // HELPER: Normalize Answer Text for Flexible Grading
-const normalizeAnswerText = (text: any) => {
+export const normalizeAnswerText = (text: any) => {
   if (!text) return '';
   return String(text)
     .toLowerCase()
@@ -160,6 +160,38 @@ const mapProgress = (p: any, userName: string = ''): StudentProgress => ({
   startedAt: p.started_at ? new Date(p.started_at).getTime() : undefined,
   lastUpdated: new Date(p.updated_at).getTime()
 });
+
+// ==========================================
+// GRADING LOGIC (Shared between Student Submission and Teacher Export)
+// ==========================================
+export const calculateScore = (exam: Exam, answers: Record<string, any>): number => {
+  let totalScore = 0;
+  
+  exam.questions.forEach(q => {
+    const ans = answers[q.id];
+    
+    if (ans !== undefined && ans !== null && ans !== '') {
+      if (q.type === QuestionType.MULTIPLE_CHOICE) {
+         // Improved Type Coercion: DB might give "0" (string), App gives 0 (number)
+         if (String(ans) === String(q.correctOptionIndex)) {
+           totalScore += q.score;
+         }
+      } else if (q.type === QuestionType.SHORT_ANSWER) {
+         // FLEXIBLE GRADING for Short Answer
+         const studentAns = normalizeAnswerText(ans);
+         const isCorrect = q.acceptedAnswers?.some(a => normalizeAnswerText(a) === studentAns);
+         if (isCorrect) totalScore += q.score;
+      } else if (q.type === QuestionType.JAVA_CODE) {
+         // Fallback grading: Length check > 20 chars
+         if (typeof ans === 'string' && ans.length > 20) {
+           totalScore += q.score;
+         }
+      }
+    }
+  });
+  
+  return totalScore;
+};
 
 // ==========================================
 // AUTH & USER MANAGEMENT
@@ -426,6 +458,7 @@ export const submitStudentProgress = async (progress: StudentProgress): Promise<
         exam_id: progress.examId,
         current_question_index: progress.currentQuestionIndex,
         answers: progress.answers || {}, // Force object
+        score: progress.score, // CRITICAL: Save the actual calculated score
         status: progress.status,
         updated_at: new Date().toISOString()
       };
@@ -547,32 +580,11 @@ export const getExamResults = async (examId: string): Promise<ExamResult[]> => {
     const studentId = p.student_id || p.studentId; 
     const user = users.find((u: any) => (u.student_id || u.studentId) === studentId);
 
-    let totalScore = 0;
-    let maxScore = 0;
-
-    exam!.questions.forEach(q => {
-      maxScore += q.score;
-      const ans = answers[q.id];
-      
-      if (ans !== undefined && ans !== null && ans !== '') {
-        if (q.type === QuestionType.MULTIPLE_CHOICE) {
-           // Improved Type Coercion: DB might give "0" (string), App gives 0 (number)
-           if (String(ans) === String(q.correctOptionIndex)) {
-             totalScore += q.score;
-           }
-        } else if (q.type === QuestionType.SHORT_ANSWER) {
-           // FLEXIBLE GRADING for Short Answer
-           const studentAns = normalizeAnswerText(ans);
-           const isCorrect = q.acceptedAnswers?.some(a => normalizeAnswerText(a) === studentAns);
-           if (isCorrect) totalScore += q.score;
-        } else if (q.type === QuestionType.JAVA_CODE) {
-           // Fallback grading: Length check > 20 chars
-           if (typeof ans === 'string' && ans.length > 20) {
-             totalScore += q.score;
-           }
-        }
-      }
-    });
+    // Calculate Scores using shared logic
+    const totalScore = calculateScore(exam!, answers);
+    
+    // Calculate Max Score
+    const maxScore = exam!.questions.reduce((sum, q) => sum + q.score, 0);
 
     return {
       studentId: studentId,

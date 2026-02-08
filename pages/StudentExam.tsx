@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { User, Exam, Question, QuestionType, StudentProgress } from '../types';
-import { getExamsForStudent, submitStudentProgress, compileJavaCode, getStudentProgress } from '../services/dataService';
+import { getExamsForStudent, submitStudentProgress, compileJavaCode, getStudentProgress, calculateScore } from '../services/dataService';
 import { Button } from '../components/Button';
 import { Card } from '../components/Card';
 
@@ -119,420 +119,292 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
         finalData = localData || dbData;
     }
 
-    if (finalData && finalData.status === 'COMPLETED') {
-        alert("You have already completed this exam.");
-        await loadExamsAndStatus();
-        return;
-    }
-
     let startTime = Date.now();
-    let startIdx = 0;
-    let savedAnswers = {};
-
-    if (finalData && finalData.status === 'IN_PROGRESS' && finalData.startedAt) {
-      startTime = finalData.startedAt;
-      startIdx = finalData.currentQuestionIndex || 0;
-      savedAnswers = finalData.answers || {};
+    if (finalData && finalData.startedAt) {
+       startTime = finalData.startedAt;
     } else {
-      await syncProgress(exam.id, 0, {}, 'IN_PROGRESS', startTime);
-      saveToLocal(exam.id, 0, {}, startTime, 'IN_PROGRESS');
+       // First time start
+       // Need to save start time immediately to lock it in
+       await syncProgress(exam.id, 0, {}, 'IDLE', startTime, true);
     }
 
-    setExamStartTime(startTime);
-    setCurrentQuestionIdx(startIdx);
-    
-    // Initialize both State and Ref
-    setAnswers(savedAnswers);
-    answersRef.current = savedAnswers;
-    
     setActiveExam(exam);
+    setExamStartTime(startTime);
+    setAnswers(finalData?.answers || {});
+    answersRef.current = finalData?.answers || {};
+    setCurrentQuestionIdx(finalData?.currentQuestionIndex || 0);
     setShowTOS(null);
   };
 
-  const syncProgress = async (examId: string, idx: number, currAnswers: any, status: 'IN_PROGRESS' | 'COMPLETED', startedAt: number, silent = false) => {
-    // Double check we aren't sending empty answers if we have them in ref
-    const finalAnswers = Object.keys(currAnswers).length > 0 ? currAnswers : answersRef.current;
+  const syncProgress = async (examId: string, qIdx: number, ans: Record<string, any>, status: 'IDLE' | 'IN_PROGRESS' | 'COMPLETED', startedAt: number, bg: boolean = false) => {
+    if (!bg) setSyncingStatus('Saving...');
     
+    // Calculate current score (even if partial)
+    const exam = availableExams.find(e => e.id === examId);
+    const currentScore = exam ? calculateScore(exam, ans) : 0;
+
     const progress: StudentProgress = {
       studentId: user.studentId!,
       studentName: user.name,
-      examId: examId,
-      currentQuestionIndex: idx,
-      answers: finalAnswers,
-      score: 0,
+      examId,
+      currentQuestionIndex: qIdx,
+      answers: ans,
+      score: currentScore, // Save Score
       status,
-      startedAt: startedAt,
+      startedAt, // Persist start time
       lastUpdated: Date.now()
     };
     
-    saveToLocal(examId, idx, finalAnswers, startedAt, status);
-    const result = await submitStudentProgress(progress); 
-    if (!result.success && !silent) {
-        alert(`Sync Error: ${result.error || 'Connection Failed'}\nYour progress is saved locally. We will retry.`);
+    // Save Local
+    localStorage.setItem(getStorageKey(user.studentId!, examId), JSON.stringify(progress));
+    
+    // Save DB
+    const res = await submitStudentProgress(progress);
+    if (!res.success && !bg) {
+        alert("Warning: Could not save progress to server. Check internet connection.");
     }
-    return result;
+    
+    if (!bg) setSyncingStatus(null);
   };
 
-  const saveToLocal = (examId: string, idx: number, currAnswers: any, startedAt: number, status: string) => {
-      const key = getStorageKey(user.studentId!, examId);
-      const data = {
-          studentId: user.studentId!,
-          examId,
-          currentQuestionIndex: idx,
-          answers: currAnswers,
-          status,
-          startedAt,
-          lastUpdated: Date.now()
-      };
-      localStorage.setItem(key, JSON.stringify(data));
+  const finishExam = async (force: boolean = false) => {
+    if (!activeExam) return;
+    if (!force && !window.confirm("Are you sure you want to submit? You cannot change answers after submission.")) return;
+    
+    // Calculate FINAL Score
+    const finalScore = calculateScore(activeExam, answersRef.current);
+
+    await syncProgress(activeExam.id, currentQuestionIdx, answersRef.current, 'COMPLETED', examStartTime, false);
+    alert(`Exam Submitted! Your Score: ${finalScore}`);
+    
+    setActiveExam(null);
+    loadExamsAndStatus();
   };
 
-  const handleAnswer = (val: any) => {
-    const qId = activeExam!.questions[currentQuestionIdx].id;
+  // UI Handlers
+  const handleAnswerChange = (val: any) => {
+    if (!activeExam) return;
+    const qId = activeExam.questions[currentQuestionIdx].id;
     const newAnswers = { ...answers, [qId]: val };
-    
-    // Update State (for UI)
     setAnswers(newAnswers);
-    // Update Ref (for Sync logic)
-    answersRef.current = newAnswers;
-    
-    saveToLocal(activeExam!.id, currentQuestionIdx, newAnswers, examStartTime, 'IN_PROGRESS');
+    answersRef.current = newAnswers; // Update Ref immediately
   };
 
-  const runCode = async (code: string, question: Question) => {
+  const handleRunCode = async () => {
+    if (!activeExam) return;
+    const q = activeExam.questions[currentQuestionIdx];
+    if (q.type !== QuestionType.JAVA_CODE || !q.testCases) return;
+    
+    const code = answers[q.id] || '';
     setIsCompiling(true);
-    setCodeOutput('Compiling and Running Tests...');
-    const result = await compileJavaCode(code, question.testCases || []);
+    setCodeOutput('Compiling and Running...');
+    
+    const result = await compileJavaCode(code, q.testCases);
     setCodeOutput(result.output);
     setIsCompiling(false);
   };
 
-  const nextQuestion = () => {
-    if (currentQuestionIdx < activeExam!.questions.length - 1) {
-      const nextIdx = currentQuestionIdx + 1;
-      setCurrentQuestionIdx(nextIdx);
-      
-      // Use Ref to ensure we send the latest answers
-      saveToLocal(activeExam!.id, nextIdx, answersRef.current, examStartTime, 'IN_PROGRESS');
-      syncProgress(activeExam!.id, nextIdx, answersRef.current, 'IN_PROGRESS', examStartTime, true);
-      
-      setCodeOutput(''); 
-    }
-  };
-
-  const prevQuestion = () => {
-    if (currentQuestionIdx > 0) {
-      const prevIdx = currentQuestionIdx - 1;
-      setCurrentQuestionIdx(prevIdx);
-      saveToLocal(activeExam!.id, prevIdx, answersRef.current, examStartTime, 'IN_PROGRESS');
-    }
-  };
-
-  const finishExam = async (force = false) => {
-    if (!activeExam) return;
-
-    if (!force && !window.confirm("Are you sure you want to submit? You cannot undo this action.")) {
-      return;
-    }
-    
-    setSyncingStatus("Submitting...");
-    // Use Ref to ensure absolute latest state is sent
-    const result = await syncProgress(activeExam.id, currentQuestionIdx, answersRef.current, 'COMPLETED', examStartTime);
-    setSyncingStatus(null);
-    
-    if (result.success) {
-      setExamStatuses(prev => ({
-        ...prev,
-        [activeExam.id]: {
-          ...prev[activeExam.id],
-          status: 'COMPLETED',
-          lastUpdated: Date.now()
-        }
-      }));
-      if(!force) alert('Exam Submitted Successfully!');
-      setActiveExam(null);
-      loadExamsAndStatus(); 
-    } else {
-      if(!force) alert(`Submission Failed: ${result.error}\nPlease click 'Finish' again or check your internet connection.`);
-    }
-  };
-
   const formatTime = (seconds: number) => {
-    if (seconds < 0) return "0:00";
     const m = Math.floor(seconds / 60);
     const s = seconds % 60;
     return `${m}:${s < 10 ? '0' : ''}${s}`;
   };
 
+  // --- RENDER ---
+
   if (activeExam) {
-    const question = activeExam.questions[currentQuestionIdx];
-    const isLast = currentQuestionIdx === activeExam.questions.length - 1;
+    const q = activeExam.questions[currentQuestionIdx];
     const isFirst = currentQuestionIdx === 0;
-    const isMCQ = question.type === QuestionType.MULTIPLE_CHOICE;
+    const isLast = currentQuestionIdx === activeExam.questions.length - 1;
 
     return (
-      <div className="min-h-screen bg-gray-100 flex flex-col h-screen overflow-hidden">
-        {/* Exam Header */}
-        <header className="bg-white border-b border-gray-200 px-6 py-4 flex justify-between items-center shadow-sm z-10">
-          <div>
-            <h1 className="text-xl font-bold text-gray-800">{activeExam.title}</h1>
-            <span className="text-sm text-gray-500">Question {currentQuestionIdx + 1} of {activeExam.questions.length}</span>
-          </div>
-          <div className="flex items-center gap-6">
-             <div className="text-center">
-                <span className="block text-xs text-gray-400 uppercase font-bold">Time Remaining</span>
-                <span className={`text-xl font-mono font-bold ${timeLeft < 300 ? 'text-red-500 animate-pulse' : 'text-purple-600'}`}>
-                  {formatTime(timeLeft)}
-                </span>
-             </div>
-             <Button variant="danger" size="sm" onClick={() => finishExam(false)} disabled={!!syncingStatus}>
-               {syncingStatus ? 'Submitting...' : 'Submit Exam'}
-             </Button>
-          </div>
-        </header>
-
-        <div className="flex flex-1 overflow-hidden relative">
-          
-          {/* Main Question Area */}
-          <div className={`${isMCQ ? 'w-full max-w-4xl mx-auto' : 'w-1/2 border-r border-gray-200'} bg-white overflow-y-auto p-6 transition-all duration-300`}>
-            {question.imageUrl && (
-              <img src={question.imageUrl} alt="Question Illustration" className="w-full h-auto rounded-lg mb-6 object-contain max-h-[400px] border border-gray-100 bg-gray-50" />
-            )}
-            
-            <h2 className="text-xl font-semibold text-gray-800 mb-6 whitespace-pre-wrap leading-relaxed">{question.text}</h2>
-            
-            {/* MCQ Options */}
-            {isMCQ && (
-              <div className="space-y-3 mt-8 max-w-2xl mx-auto">
-                {question.options?.map((opt, idx) => (
-                  <label key={idx} className={`block p-4 rounded-xl border-2 cursor-pointer transition-all ${answers[question.id] === idx ? 'border-purple-600 bg-purple-50 ring-2 ring-purple-200' : 'border-gray-200 hover:border-purple-300 hover:bg-gray-50'}`}>
-                    <input 
-                      type="radio" 
-                      name="option" 
-                      className="hidden"
-                      checked={answers[question.id] === idx}
-                      onChange={() => handleAnswer(idx)}
-                    />
-                    <div className="flex items-center gap-4">
-                      <span className={`w-8 h-8 rounded-full flex items-center justify-center border-2 font-bold text-sm ${answers[question.id] === idx ? 'bg-purple-600 border-purple-600 text-white' : 'border-gray-300 text-gray-500'}`}>
-                        {String.fromCharCode(65 + idx)}
-                      </span>
-                      <span className="text-lg text-gray-700">{opt}</span>
-                    </div>
-                  </label>
-                ))}
-              </div>
-            )}
-
-            {/* Java Requirements */}
-            {question.type === QuestionType.JAVA_CODE && (
-              <div className="bg-blue-50 p-4 rounded-lg border border-blue-100 text-sm text-blue-800 mb-4">
-                 <h4 className="font-bold mb-1">Requirements:</h4>
-                 <ul className="list-disc pl-4 space-y-1">
-                   <li>Language: Java 17</li>
-                   <li>Check the test cases below for expected I/O.</li>
-                 </ul>
-              </div>
-            )}
-
-             {/* Test Cases */}
-             {question.type === QuestionType.JAVA_CODE && question.testCases && (
-               <div className="mt-6">
-                 <h4 className="text-sm font-bold text-gray-600 mb-2">Test Cases</h4>
-                 <div className="space-y-2">
-                   {question.testCases.map((tc, idx) => (
-                     <div key={idx} className="bg-gray-50 p-2 rounded text-xs font-mono border border-gray-200">
-                        <span className="text-gray-500">Input:</span> {tc.input} <br/>
-                        <span className="text-gray-500">Output:</span> {tc.output}
-                     </div>
-                   ))}
-                 </div>
+      <div className="min-h-screen bg-gray-50 flex flex-col">
+         {/* Exam Header */}
+         <div className="bg-white shadow-sm border-b sticky top-0 z-10">
+            <div className="container mx-auto px-4 h-16 flex justify-between items-center">
+               <h1 className="font-bold text-gray-800 text-lg truncate max-w-md">{activeExam.title}</h1>
+               <div className="flex items-center gap-4">
+                  <div className={`text-xl font-mono font-bold ${timeLeft < 300 ? 'text-red-500 animate-pulse' : 'text-purple-600'}`}>
+                    {formatTime(timeLeft)}
+                  </div>
+                  <Button variant="danger" size="sm" onClick={() => finishExam(false)}>Submit Exam</Button>
                </div>
-             )}
-          </div>
-
-          {/* Right Panel */}
-          {!isMCQ && (
-            <div className="flex-1 bg-gray-50 flex flex-col shadow-inner">
-              
-              {/* Java Code Editor */}
-              {question.type === QuestionType.JAVA_CODE && (
-                <div className="flex-1 flex flex-col p-4">
-                  <div className="flex justify-between items-center mb-2">
-                    <span className="text-sm font-bold text-gray-500">Main.java</span>
-                    <Button size="sm" onClick={() => runCode(answers[question.id] || '', question)} disabled={isCompiling}>
-                      {isCompiling ? 'Running...' : 'Run & Test'}
-                    </Button>
-                  </div>
-                  <textarea
-                    className="flex-1 w-full bg-[#1e1e1e] text-gray-100 font-mono p-4 rounded-lg focus:outline-none resize-none text-sm shadow-md"
-                    placeholder={`public class Main {\n  public static void main(String[] args) {\n    // Write your code here\n  }\n}`}
-                    value={answers[question.id] || ''}
-                    onChange={(e) => handleAnswer(e.target.value)}
-                    spellCheck={false}
-                  />
-                  <div className="h-32 bg-black text-green-400 font-mono text-sm p-4 mt-4 rounded-lg overflow-y-auto border border-gray-700 shadow-md">
-                     <div className="text-gray-500 text-xs border-b border-gray-700 pb-1 mb-1">Console Output</div>
-                     <pre>{codeOutput || '> Ready to compile...'}</pre>
-                  </div>
-                </div>
-              )}
-
-              {/* Short Answer Input */}
-              {question.type === QuestionType.SHORT_ANSWER && (
-                <div className="flex-1 flex flex-col justify-center items-center p-8">
-                  <div className="w-full max-w-xl">
-                     <label className="block text-gray-700 font-bold mb-3 text-lg">Your Answer</label>
-                     <textarea
-                       className="w-full p-6 border-2 border-gray-200 rounded-xl focus:ring-4 focus:ring-purple-100 focus:border-purple-500 outline-none transition-all text-lg shadow-sm"
-                       rows={6}
-                       placeholder="Type your answer here..."
-                       value={answers[question.id] || ''}
-                       onChange={(e) => handleAnswer(e.target.value)}
-                     />
-                     <p className="mt-3 text-sm text-gray-400">Please answer concisely.</p>
-                  </div>
-                </div>
-              )}
             </div>
-          )}
-        </div>
-        
-        {/* Footer Navigation */}
-        <div className="bg-white p-4 border-t border-gray-200 flex justify-between items-center px-8 z-20">
-            <Button 
-              variant="outline" 
-              onClick={prevQuestion} 
-              disabled={isFirst}
-              className={isFirst ? "opacity-0 pointer-events-none" : ""}
-            >
-              &larr; Previous
-            </Button>
-            
-            {isLast ? (
-                <Button variant="danger" onClick={() => finishExam(false)} disabled={!!syncingStatus}>
-                  {syncingStatus ? 'Submitting...' : 'Finish & Submit'}
-                </Button>
-            ) : (
-                <Button onClick={nextQuestion}>Next Question &rarr;</Button>
-            )}
-        </div>
-      </div>
-    );
-  }
-
-  // --- TOS MODAL ---
-  if (showTOS) {
-    return (
-      <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-        <Card className="max-w-md w-full animate-fade-in" title="Examination Rules">
-          <div className="space-y-4 text-gray-700 mb-6">
-            <p>Please read the following rules carefully before starting:</p>
-            <ul className="list-disc pl-5 space-y-2 text-sm">
-              <li>Once you click <strong>"I Agree & Start"</strong>, the timer will begin immediately.</li>
-              <li><strong>Do not close the browser.</strong> The timer continues to run on the server even if you disconnect.</li>
-              <li>If you lose connection, your answers are saved locally and will sync when you reconnect.</li>
-              <li>Submitting the exam is <strong>final</strong>. You cannot re-enter.</li>
-            </ul>
-          </div>
-          <div className="flex flex-col gap-3">
-            <Button onClick={() => initExamSession(showTOS)} className="w-full py-3">I Agree & Start Exam</Button>
-            <button onClick={() => setShowTOS(null)} className="text-gray-500 text-sm hover:underline">Cancel</button>
-          </div>
-        </Card>
-      </div>
-    );
-  }
-
-  // --- LOBBY ---
-  return (
-    <div className="min-h-screen bg-purple-50">
-       <nav className="bg-white shadow-sm p-4 sticky top-0 z-10">
-         <div className="container mx-auto flex justify-between items-center">
-            <div className="font-bold text-purple-800 text-lg">UniExam Pro <span className="text-gray-400 font-normal ml-2">| Student Portal</span></div>
-            <div className="flex items-center gap-4">
-               {syncingStatus && (
-                 <div className="flex items-center gap-2 text-xs text-purple-600 bg-purple-100 px-3 py-1 rounded-full animate-pulse">
-                   <div className="w-2 h-2 bg-purple-600 rounded-full"></div>
-                   {syncingStatus}
-                 </div>
-               )}
-               <div className="text-right">
-                 <p className="text-sm font-bold text-gray-800">{user.name}</p>
-                 <p className="text-xs text-gray-500">ID: {user.studentId}</p>
-               </div>
-               <Button size="sm" variant="secondary" onClick={onLogout}>Logout</Button>
+            {/* Progress Bar */}
+            <div className="h-1 bg-gray-200 w-full">
+               <div className="h-full bg-purple-500 transition-all duration-300" style={{ width: `${((currentQuestionIdx + 1) / activeExam.questions.length) * 100}%` }}></div>
             </div>
          </div>
-       </nav>
 
-       <div className="container mx-auto p-4 md:p-8">
-         <h2 className="text-2xl font-bold text-gray-800 mb-6">Available Examinations</h2>
-         
-         {availableExams.length === 0 ? (
-           <Card className="text-center py-12">
-             <div className="text-6xl mb-4">🎉</div>
-             <h3 className="text-xl font-medium text-gray-700">No active exams</h3>
-             <p className="text-gray-500">You are all caught up! Check back later.</p>
-           </Card>
-         ) : (
-           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-             {availableExams.map(exam => {
-               const status = examStatuses[exam.id]?.status || 'IDLE';
-               const isCompleted = status === 'COMPLETED';
-               const isResume = status === 'IN_PROGRESS';
+         {/* Exam Body */}
+         <div className="container mx-auto px-4 py-6 flex-1 max-w-5xl">
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 h-full">
+               
+               {/* Question Panel */}
+               <div className="space-y-6">
+                  <div className="flex justify-between items-end">
+                     <span className="text-sm font-bold text-gray-400">Question {currentQuestionIdx + 1} of {activeExam.questions.length}</span>
+                     {syncingStatus && <span className="text-xs text-purple-500 animate-pulse">{syncingStatus}</span>}
+                  </div>
+                  <h2 className="text-xl font-medium text-gray-800 leading-relaxed whitespace-pre-wrap">{q.text}</h2>
+                  {q.imageUrl && (
+                    <img src={q.imageUrl} alt="Question Reference" className="max-h-64 rounded-lg border shadow-sm object-contain bg-white" />
+                  )}
+               </div>
 
-               return (
-                 <Card key={exam.id} title={exam.title} className={`transition-all ${isCompleted ? 'opacity-70' : 'hover:ring-2 hover:ring-purple-300'}`}>
-                    <div className="mb-4 text-gray-600 text-sm h-12 overflow-hidden">{exam.description}</div>
-                    <div className="flex items-center gap-4 text-sm text-gray-500 mb-6">
-                      <span className="flex items-center gap-1">⏱ {exam.durationMinutes} mins</span>
-                      <span className="flex items-center gap-1">📝 {exam.questions.length} Questions</span>
-                    </div>
-                    
-                    {isCompleted ? (
-                       <div className="flex flex-col gap-2">
-                         <div className="w-full bg-gray-100 text-gray-500 text-center py-2 rounded font-medium cursor-not-allowed">
-                            Exam Completed
-                         </div>
-                         <Button
-                            variant="primary" 
-                            size="sm"
-                            className="w-full bg-orange-500 hover:bg-orange-600 border-orange-200 shadow-none"
-                            onClick={async () => {
-                               if(window.confirm("This will force-push your local answers to the server again.\n\nUse this only if your teacher cannot see your results.\n\nContinue?")) {
-                                  const localKey = getStorageKey(user.studentId!, exam.id);
-                                  const localData = JSON.parse(localStorage.getItem(localKey) || '{}');
-                                  if (localData && localData.status === 'COMPLETED') {
-                                      setSyncingStatus("Force Syncing...");
-                                      const res = await submitStudentProgress(localData);
-                                      setSyncingStatus(null);
-                                      if (res.success) alert("✅ Sync Successful!");
-                                      else alert(`❌ Sync Failed: ${res.error}`);
-                                  } else {
-                                      alert("No local data found to sync.");
-                                  }
-                               }
-                            }}
-                         >
-                           ⚠ Force Resync Data
-                         </Button>
-                       </div>
-                    ) : (
-                       <Button 
-                         className="w-full" 
-                         variant={isResume ? 'outline' : 'primary'}
-                         onClick={() => isResume ? initExamSession(exam) : setShowTOS(exam)}
-                       >
-                         {isResume ? 'Resume Exam' : 'Start Exam'}
-                       </Button>
-                    )}
-                 </Card>
-               );
-             })}
+               {/* Answer Panel */}
+               <div className="flex flex-col h-full bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden">
+                  <div className="flex-1 p-6 overflow-y-auto">
+                     <h3 className="text-sm font-bold text-gray-500 uppercase mb-4">Your Answer</h3>
+                     
+                     {q.type === QuestionType.MULTIPLE_CHOICE && (
+                        <div className="space-y-3">
+                           {q.options?.map((opt, idx) => (
+                              <label key={idx} className={`flex items-center gap-4 p-4 rounded-xl border-2 cursor-pointer transition-all ${answers[q.id] === String(idx) ? 'border-purple-500 bg-purple-50' : 'border-gray-100 hover:border-purple-200'}`}>
+                                 <div className={`w-5 h-5 rounded-full border-2 flex items-center justify-center ${answers[q.id] === String(idx) ? 'border-purple-500' : 'border-gray-300'}`}>
+                                    {answers[q.id] === String(idx) && <div className="w-2.5 h-2.5 rounded-full bg-purple-500"></div>}
+                                 </div>
+                                 <input type="radio" name="mcq" className="hidden" checked={answers[q.id] === String(idx)} onChange={() => handleAnswerChange(String(idx))} />
+                                 <span className="text-gray-700">{opt}</span>
+                              </label>
+                           ))}
+                        </div>
+                     )}
+
+                     {q.type === QuestionType.SHORT_ANSWER && (
+                        <textarea 
+                           className="w-full h-48 p-4 rounded-xl border-2 border-gray-200 focus:border-purple-500 focus:ring-0 outline-none resize-none text-lg"
+                           placeholder="Type your answer here..."
+                           value={answers[q.id] || ''}
+                           onChange={(e) => handleAnswerChange(e.target.value)}
+                        />
+                     )}
+
+                     {q.type === QuestionType.JAVA_CODE && (
+                        <div className="flex flex-col h-full gap-4">
+                           <textarea 
+                              className="flex-1 w-full p-4 rounded-xl border-2 border-gray-200 focus:border-purple-500 focus:ring-0 outline-none resize-none font-mono text-sm bg-gray-50"
+                              placeholder="// Write your Java code here class Main { public static void main(String[] args) { ... } }"
+                              value={answers[q.id] || ''}
+                              onChange={(e) => handleAnswerChange(e.target.value)}
+                           />
+                           <div className="flex justify-between items-center">
+                              <span className="text-xs text-gray-400">Output console below</span>
+                              <Button size="sm" onClick={handleRunCode} disabled={isCompiling}>
+                                 {isCompiling ? 'Running...' : '▶ Run Code'}
+                              </Button>
+                           </div>
+                           <div className="h-32 bg-gray-900 rounded-xl p-3 text-xs font-mono text-green-400 overflow-y-auto whitespace-pre-wrap">
+                              {codeOutput || '> Ready to compile...'}
+                           </div>
+                        </div>
+                     )}
+                  </div>
+                  
+                  {/* Footer Nav */}
+                  <div className="p-4 bg-gray-50 border-t flex justify-between">
+                     <Button variant="secondary" disabled={isFirst} onClick={() => {
+                        syncProgress(activeExam.id, currentQuestionIdx, answersRef.current, 'IN_PROGRESS', examStartTime, true);
+                        setCurrentQuestionIdx(prev => prev - 1);
+                     }}>
+                        &larr; Previous
+                     </Button>
+                     {isLast ? (
+                        <Button onClick={() => finishExam(false)}>Submit Exam</Button>
+                     ) : (
+                        <Button onClick={() => {
+                           syncProgress(activeExam.id, currentQuestionIdx, answersRef.current, 'IN_PROGRESS', examStartTime, true);
+                           setCurrentQuestionIdx(prev => prev + 1);
+                        }}>
+                           Next Question &rarr;
+                        </Button>
+                     )}
+                  </div>
+               </div>
+            </div>
+         </div>
+      </div>
+    );
+  }
+
+  // --- DASHBOARD LIST ---
+
+  return (
+    <div className="min-h-screen bg-gray-50">
+      <header className="bg-white shadow-sm sticky top-0 z-10">
+        <div className="container mx-auto px-4 h-16 flex justify-between items-center">
+           <h1 className="font-bold text-gray-800 text-xl">My Exams</h1>
+           <div className="flex items-center gap-4">
+              <span className="text-sm text-gray-500">{user.name} ({user.studentId})</span>
+              <button onClick={onLogout} className="text-sm text-red-500 hover:text-red-700 font-medium">Logout</button>
            </div>
+        </div>
+      </header>
+
+      <main className="container mx-auto px-4 py-8">
+         {syncingStatus && (
+            <div className="mb-4 bg-blue-50 text-blue-700 px-4 py-3 rounded-lg flex items-center gap-2 animate-pulse">
+               <span>↻</span> {syncingStatus}
+            </div>
          )}
-       </div>
+         
+         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+            {availableExams.length === 0 ? (
+               <div className="col-span-3 text-center py-20 text-gray-400">No exams assigned to your section ({user.section}).</div>
+            ) : (
+               availableExams.map(exam => {
+                  const status = examStatuses[exam.id];
+                  const isCompleted = status?.status === 'COMPLETED';
+                  
+                  return (
+                     <Card key={exam.id} className="hover:shadow-lg transition-all">
+                        <div className="flex justify-between items-start mb-4">
+                           <h3 className="font-bold text-lg text-gray-900">{exam.title}</h3>
+                           {isCompleted && <span className="bg-green-100 text-green-700 text-xs px-2 py-1 rounded-full font-bold">Completed</span>}
+                        </div>
+                        <p className="text-gray-500 text-sm mb-6 min-h-[40px]">{exam.description}</p>
+                        <div className="flex items-center justify-between mt-auto pt-4 border-t">
+                           <div className="text-xs text-gray-400">
+                              <div>{exam.questions.length} Questions</div>
+                              <div>{exam.durationMinutes} Minutes</div>
+                           </div>
+                           {isCompleted ? (
+                              <div className="text-right">
+                                 <div className="text-2xl font-bold text-purple-600">{status.score}</div>
+                                 <div className="text-xs text-gray-400">Your Score</div>
+                              </div>
+                           ) : (
+                              <Button onClick={() => setShowTOS(exam)}>
+                                 {status?.status === 'IN_PROGRESS' ? 'Continue Exam' : 'Start Exam'}
+                              </Button>
+                           )}
+                        </div>
+                     </Card>
+                  );
+               })
+            )}
+         </div>
+      </main>
+
+      {/* Terms of Service Modal */}
+      {showTOS && (
+         <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+            <div className="bg-white rounded-2xl max-w-lg w-full p-6 shadow-2xl animate-fade-in">
+               <h2 className="text-xl font-bold text-gray-900 mb-4">Exam Rules & Instructions</h2>
+               <div className="space-y-3 text-gray-600 text-sm mb-6 bg-gray-50 p-4 rounded-lg">
+                  <p>1. You have <strong>{showTOS.durationMinutes} minutes</strong> to complete this exam.</p>
+                  <p>2. Do not refresh the page or close the browser tab repeatedly.</p>
+                  <p>3. Your progress is saved automatically every 30 seconds.</p>
+                  <p>4. Once submitted, you cannot change your answers.</p>
+                  <p>5. Malpractice or cheating attempts will be logged.</p>
+               </div>
+               <div className="flex gap-3 justify-end">
+                  <Button variant="secondary" onClick={() => setShowTOS(null)}>Cancel</Button>
+                  <Button onClick={() => initExamSession(showTOS)}>I Agree, Start Exam</Button>
+               </div>
+            </div>
+         </div>
+      )}
     </div>
   );
 };
