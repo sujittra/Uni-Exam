@@ -102,9 +102,15 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
     // Compare timestamps to find the most recent state
     if (localData && dbData) {
         finalData = (localData.lastUpdated > dbData.lastUpdated) ? localData : dbData;
-        console.log("Syncing: Using " + (localData.lastUpdated > dbData.lastUpdated ? "Local Storage" : "Database"));
     } else {
         finalData = localData || dbData;
+    }
+
+    // Safety Check: If already completed, prevent restart
+    if (finalData && finalData.status === 'COMPLETED') {
+        alert("You have already completed this exam.");
+        await loadExamsAndStatus();
+        return;
     }
 
     let startTime = Date.now();
@@ -135,7 +141,7 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
     setShowTOS(null);
   };
 
-  const syncProgress = (examId: string, idx: number, currAnswers: any, status: 'IN_PROGRESS' | 'COMPLETED', startedAt: number) => {
+  const syncProgress = async (examId: string, idx: number, currAnswers: any, status: 'IN_PROGRESS' | 'COMPLETED', startedAt: number) => {
     const progress: StudentProgress = {
       studentId: user.studentId!,
       studentName: user.name,
@@ -148,15 +154,11 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
       lastUpdated: Date.now()
     };
     
-    // 1. Send to Server
-    submitStudentProgress(progress); 
-    
-    // 2. Update LocalStorage (Redundant but ensures consistency)
-    if (status === 'COMPLETED') {
-        localStorage.removeItem(getStorageKey(user.studentId!, examId));
-    } else {
-        saveToLocal(examId, idx, currAnswers, startedAt, status);
-    }
+    // 1. Update LocalStorage immediately (Acts as offline cache)
+    saveToLocal(examId, idx, currAnswers, startedAt, status);
+
+    // 2. Send to Server (Async)
+    await submitStudentProgress(progress); 
   };
 
   const saveToLocal = (examId: string, idx: number, currAnswers: any, startedAt: number, status: string) => {
@@ -212,16 +214,18 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
     }
   };
 
-  const finishExam = (force = false) => {
+  const finishExam = async (force = false) => {
     if (!force && !window.confirm("Are you sure you want to submit? You cannot undo this action.")) {
       return;
     }
-    // Final Sync and Clear Local
-    syncProgress(activeExam!.id, currentQuestionIdx, answers, 'COMPLETED', examStartTime);
+    
+    // Set UI to loading state if needed, or just await
+    // Final Sync - Await to ensure DB is updated before we return to Lobby
+    await syncProgress(activeExam!.id, currentQuestionIdx, answers, 'COMPLETED', examStartTime);
     
     if(!force) alert('Exam Submitted Successfully!');
     setActiveExam(null);
-    loadExamsAndStatus(); // Refresh list
+    loadExamsAndStatus(); // Refresh list to update button state
   };
 
   const formatTime = (seconds: number) => {
