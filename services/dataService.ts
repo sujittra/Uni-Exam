@@ -4,11 +4,11 @@ import { Exam, Question, QuestionType, StudentProgress, User, UserRole } from '.
 // ==========================================
 // SUPABASE CONFIGURATION
 // ==========================================
-// แก้ไข: ค่า SUPABASE_URL ต้องเป็น Link เต็มๆ ไม่ใช่แค่ ID
-// รูปแบบที่ถูกต้องคือ: https://<Project-ID>.supabase.co
+// For Vercel Deployment, we use Environment Variables.
+// Fallback to hardcoded values for local testing if env vars are missing.
 
-const SUPABASE_URL = 'https://wbkpuqtzkpvhjnckinep.supabase.co'; 
-const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6India3B1cXR6a3B2aGpuY2tpbmVwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzA1NDE2OTMsImV4cCI6MjA4NjExNzY5M30.2Vsb4vl5WTnLLn60033Rcx-X6TfdDXrI1Qsuj8i_dN0';
+const SUPABASE_URL = (import.meta as any).env?.VITE_SUPABASE_URL || 'https://wbkpuqtzkpvhjnckinep.supabase.co'; 
+const SUPABASE_KEY = (import.meta as any).env?.VITE_SUPABASE_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6India3B1cXR6a3B2aGpuY2tpbmVwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzA1NDE2OTMsImV4cCI6MjA4NjExNzY5M30.2Vsb4vl5WTnLLn60033Rcx-X6TfdDXrI1Qsuj8i_dN0';
 
 // Initialize Client only if keys are present
 const supabase = (SUPABASE_URL && SUPABASE_KEY) 
