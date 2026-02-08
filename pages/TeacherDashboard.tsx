@@ -1,5 +1,5 @@
-import React, { useState, useEffect } from 'react';
-import { User, Exam, Question, QuestionType, StudentProgress, TestCase } from '../types';
+import React, { useState, useEffect, useMemo } from 'react';
+import { User, Exam, Question, QuestionType, StudentProgress } from '../types';
 import { saveExam, deleteExam, getExamsForTeacher, getLiveProgress, importStudents, updateExamStatus, getExamResults, uploadExamImage, getStudents } from '../services/dataService';
 import { Card } from '../components/Card';
 import { Button } from '../components/Button';
@@ -8,6 +8,9 @@ interface TeacherDashboardProps {
   user: User;
   onLogout: () => void;
 }
+
+type SortOption = 'ID' | 'NAME' | 'SECTION' | 'STATUS' | 'PROGRESS';
+type SortDirection = 'ASC' | 'DESC';
 
 export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ user, onLogout }) => {
   const [activeTab, setActiveTab] = useState<'EXAMS' | 'STUDENTS' | 'MONITOR'>('EXAMS');
@@ -24,10 +27,19 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ user, onLogo
   // Monitor State
   const [monitoringExamId, setMonitoringExamId] = useState<string | null>(null);
   const [liveData, setLiveData] = useState<StudentProgress[]>([]);
+  
+  // Monitor Filters & Sort
+  const [monitorSearch, setMonitorSearch] = useState('');
+  const [monitorSortBy, setMonitorSortBy] = useState<SortOption>('ID');
+  const [monitorSectionFilter, setMonitorSectionFilter] = useState<string>('ALL');
+
+  // Roster Sort
+  const [rosterSearch, setRosterSearch] = useState('');
+  const [rosterSortConfig, setRosterSortConfig] = useState<{ key: keyof User; direction: SortDirection }>({ key: 'studentId', direction: 'ASC' });
 
   useEffect(() => {
     loadExams();
-    loadStudents(); // Always load students to ensure Roster/Monitor works
+    loadStudents(); 
   }, []);
 
   // Polling for monitoring
@@ -54,6 +66,7 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ user, onLogo
     setStudents(data);
   };
 
+  // ... (Exam Management Functions omitted for brevity, logic remains same) ...
   const handleCreateExam = () => {
     const newExam: Exam = {
       id: `e${Date.now()}`,
@@ -67,11 +80,8 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ user, onLogo
     setEditingExam(newExam);
   };
 
-  const handleEditExam = (exam: Exam) => {
-    // Deep copy to prevent mutation before save
-    setEditingExam(JSON.parse(JSON.stringify(exam)));
-  };
-
+  const handleEditExam = (exam: Exam) => { setEditingExam(JSON.parse(JSON.stringify(exam))); };
+  
   const handleDeleteExam = async (id: string) => {
     if (window.confirm("Are you sure you want to delete this exam?")) {
        await deleteExam(id);
@@ -82,7 +92,6 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ user, onLogo
   const handleSaveExam = async () => {
     if (!editingExam) return;
     if (!editingExam.title.trim()) return alert("Exam title is required");
-    
     await saveExam(editingExam);
     setEditingExam(null);
     loadExams();
@@ -99,7 +108,7 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ user, onLogo
       await importStudents(data);
       setImportStatus(`Success! Imported ${data.length} students.`);
       setImportText('');
-      loadStudents(); // Refresh list
+      loadStudents();
     } catch (e) {
       setImportStatus('Error parsing CSV. Use format: ID, Name, Section');
     }
@@ -116,22 +125,13 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ user, onLogo
       alert("No data to export or no student has started this exam yet.");
       return;
     }
-    
-    // CSV Generation with BOM for UTF-8 Support in Excel
     const headers = ["Student ID", "Name", "Section", "Total Score", "Max Score", "Status", "Last Update"];
     const csvContent = [
       headers.join(","),
       ...results.map(r => [
-        `"${r.studentId}"`, 
-        `"${r.name}"`, 
-        `"${r.section}"`, 
-        r.totalScore, 
-        r.maxScore,
-        `"${r.status}"`, 
-        `"${r.submittedAt}"`
+        `"${r.studentId}"`, `"${r.name}"`, `"${r.section}"`, r.totalScore, r.maxScore, `"${r.status}"`, `"${r.submittedAt}"`
       ].join(","))
     ].join("\n");
-  
     const blob = new Blob(["\uFEFF" + csvContent], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
@@ -181,157 +181,228 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ user, onLogo
     });
   };
 
-  // --- RENDER STATS HELPER ---
-  const renderQuestionStats = () => {
-     if (!monitoringExamId || liveData.length === 0) return null;
-     const currentExam = exams.find(e => e.id === monitoringExamId);
-     if (!currentExam) return null;
-
-     return (
-       <Card title="Overall Class Progress (Real-time)" className="mb-6">
-         <div className="space-y-4">
-            {currentExam.questions.map((q, idx) => {
-               // Calculate Stats
-               let correct = 0;
-               let incorrect = 0;
-               let unanswered = 0;
-               
-               liveData.forEach(student => {
-                  const studentAnswers = student.answers || {};
-                  const ans = studentAnswers[q.id];
-                  if (ans === undefined || ans === null || ans === "") {
-                    unanswered++;
-                  } else {
-                    let isCorrect = false;
-                    if (q.type === QuestionType.MULTIPLE_CHOICE) {
-                      isCorrect = String(ans) === String(q.correctOptionIndex);
-                    } else if (q.type === QuestionType.SHORT_ANSWER) {
-                      isCorrect = q.acceptedAnswers?.some(a => a.toLowerCase() === String(ans).toLowerCase()) || false;
-                    } else {
-                      // Java code - assume correct if length > 20 for this overview
-                      isCorrect = String(ans).length > 20; 
-                    }
-                    
-                    if (isCorrect) correct++;
-                    else incorrect++;
-                  }
-               });
-
-               const total = liveData.length;
-               const pCorrect = total > 0 ? (correct / total) * 100 : 0;
-               const pIncorrect = total > 0 ? (incorrect / total) * 100 : 0;
-               
-               return (
-                 <div key={q.id} className="flex items-center gap-4">
-                    <span className="w-8 font-bold text-gray-500">Q{idx+1}</span>
-                    <div className="flex-1 h-4 bg-gray-100 rounded-full overflow-hidden flex">
-                       <div className="bg-green-500 h-full" style={{ width: `${pCorrect}%` }} title={`Correct: ${correct}`}></div>
-                       <div className="bg-red-400 h-full" style={{ width: `${pIncorrect}%` }} title={`Incorrect: ${incorrect}`}></div>
-                    </div>
-                    <span className="text-xs text-gray-400 w-12 text-right">{Math.round(pCorrect)}%</span>
-                 </div>
-               )
-            })}
-         </div>
-         <div className="flex justify-center gap-4 mt-4 text-xs text-gray-500">
-            <div className="flex items-center gap-1"><div className="w-3 h-3 bg-green-500 rounded"></div> Correct</div>
-            <div className="flex items-center gap-1"><div className="w-3 h-3 bg-red-400 rounded"></div> Incorrect</div>
-            <div className="flex items-center gap-1"><div className="w-3 h-3 bg-gray-100 border rounded"></div> No Answer</div>
-         </div>
-       </Card>
-     );
+  // --- SORTING HELPERS ---
+  const handleRosterSort = (key: keyof User) => {
+    setRosterSortConfig(prev => ({
+      key,
+      direction: prev.key === key && prev.direction === 'ASC' ? 'DESC' : 'ASC'
+    }));
   };
 
-  // --- MERGE ROSTER AND LIVE DATA ---
-  const getMergedMonitorData = () => {
+  const getSortedRoster = useMemo(() => {
+    let filtered = students.filter(s => 
+      s.name.toLowerCase().includes(rosterSearch.toLowerCase()) || 
+      s.studentId?.includes(rosterSearch) ||
+      s.section?.toLowerCase().includes(rosterSearch.toLowerCase())
+    );
+
+    return filtered.sort((a, b) => {
+      const valA = (a[rosterSortConfig.key] || '').toString().toLowerCase();
+      const valB = (b[rosterSortConfig.key] || '').toString().toLowerCase();
+      if (valA < valB) return rosterSortConfig.direction === 'ASC' ? -1 : 1;
+      if (valA > valB) return rosterSortConfig.direction === 'ASC' ? 1 : -1;
+      return 0;
+    });
+  }, [students, rosterSearch, rosterSortConfig]);
+
+
+  // --- MONITOR DATA PROCESSING ---
+  const processedMonitorData = useMemo(() => {
     if (!monitoringExamId) return [];
     const exam = exams.find(e => e.id === monitoringExamId);
     if (!exam) return [];
 
-    // Filter students by assigned sections
+    // 1. Filter students by assigned sections
     const eligibleStudents = students.filter(s => 
-      exam.assignedSections.length === 0 || // No sections assigned = all valid
+      exam.assignedSections.length === 0 || 
       exam.assignedSections.includes(s.section || '')
     );
 
-    // Merge with Live Data
-    return eligibleStudents.map(student => {
+    // 2. Merge with Live Data
+    const merged = eligibleStudents.map(student => {
       const progress = liveData.find(p => p.studentId === student.studentId);
+      
+      // Calculate Progress %
+      let percent = 0;
+      let status = progress?.status || 'IDLE';
+      let lastUpdated = progress?.lastUpdated || 0;
+      let currentQ = progress?.currentQuestionIndex || -1;
+
+      if (status === 'COMPLETED') {
+        percent = 100;
+        currentQ = exam.questions.length - 1;
+      } else if (progress) {
+        const answerCount = Object.keys(progress.answers || {}).length;
+        const rawCount = Math.max(answerCount, (progress.currentQuestionIndex || 0));
+        percent = Math.round((rawCount / exam.questions.length) * 100);
+        if (percent > 100) percent = 100;
+      }
+
       return {
         user: student,
-        progress: progress || {
-          studentId: student.studentId!,
-          studentName: student.name,
-          examId: exam.id,
-          currentQuestionIndex: -1,
-          answers: {},
-          score: 0,
-          status: 'IDLE' as const,
-          lastUpdated: 0
+        progress: progress,
+        display: {
+          percent,
+          status,
+          lastUpdated,
+          currentQ
         }
       };
     });
-  };
+
+    // 3. Filter
+    const filtered = merged.filter(item => {
+      const matchSearch = 
+        item.user.name.toLowerCase().includes(monitorSearch.toLowerCase()) ||
+        item.user.studentId?.includes(monitorSearch);
+      
+      const matchSection = monitorSectionFilter === 'ALL' || item.user.section === monitorSectionFilter;
+      
+      return matchSearch && matchSection;
+    });
+
+    // 4. Sort
+    return filtered.sort((a, b) => {
+      switch (monitorSortBy) {
+        case 'NAME': return a.user.name.localeCompare(b.user.name);
+        case 'SECTION': return (a.user.section || '').localeCompare(b.user.section || '');
+        case 'STATUS': {
+           // Order: COMPLETED > IN_PROGRESS > IDLE
+           const weight = (s: string) => s === 'COMPLETED' ? 3 : s === 'IN_PROGRESS' ? 2 : 1;
+           return weight(b.display.status) - weight(a.display.status);
+        }
+        case 'PROGRESS': return b.display.percent - a.display.percent;
+        case 'ID': default: return (a.user.studentId || '').localeCompare(b.user.studentId || '');
+      }
+    });
+
+  }, [monitoringExamId, students, liveData, monitorSearch, monitorSortBy, monitorSectionFilter, exams]);
+
+  const uniqueSections = useMemo(() => {
+     const sections = new Set(students.map(s => s.section).filter(Boolean));
+     return Array.from(sections).sort();
+  }, [students]);
+
+  // --- RENDER OVERALL STATS ---
+  const renderQuestionStats = () => {
+    if (!monitoringExamId) return null;
+    const currentExam = exams.find(e => e.id === monitoringExamId);
+    if (!currentExam) return null;
+
+    // Filter only those who have submitted ANY answers in liveData
+    const activeStudents = liveData.filter(p => p.answers && Object.keys(p.answers).length > 0);
+    const totalActive = activeStudents.length;
+
+    if (totalActive === 0) return (
+       <Card className="mb-6 bg-purple-50 border-purple-100">
+         <div className="text-center py-4 text-purple-400">Waiting for students to start answering...</div>
+       </Card>
+    );
+
+    return (
+      <Card title={`Overall Class Progress (Based on ${totalActive} active students)`} className="mb-6">
+        <div className="space-y-4 max-h-60 overflow-y-auto pr-2">
+           {currentExam.questions.map((q, idx) => {
+              let correct = 0;
+              let incorrect = 0;
+              
+              activeStudents.forEach(student => {
+                 const ans = student.answers[q.id];
+                 if (ans !== undefined && ans !== null && ans !== "") {
+                   let isCorrect = false;
+                   if (q.type === QuestionType.MULTIPLE_CHOICE) {
+                     isCorrect = String(ans) === String(q.correctOptionIndex);
+                   } else if (q.type === QuestionType.SHORT_ANSWER) {
+                     isCorrect = q.acceptedAnswers?.some(a => a.toLowerCase() === String(ans).toLowerCase()) || false;
+                   } else {
+                     isCorrect = String(ans).length > 20; // Rough check for code
+                   }
+                   
+                   if (isCorrect) correct++;
+                   else incorrect++;
+                 }
+              });
+
+              const pCorrect = (correct / totalActive) * 100;
+              const pIncorrect = (incorrect / totalActive) * 100;
+              
+              return (
+                <div key={q.id} className="flex items-center gap-4 text-sm">
+                   <span className="w-8 font-bold text-gray-500">Q{idx+1}</span>
+                   <div className="flex-1 h-3 bg-gray-100 rounded-full overflow-hidden flex">
+                      <div className="bg-green-500 h-full" style={{ width: `${pCorrect}%` }}></div>
+                      <div className="bg-red-400 h-full" style={{ width: `${pIncorrect}%` }}></div>
+                   </div>
+                   <span className="text-xs text-gray-400 w-12 text-right">{Math.round(pCorrect)}%</span>
+                </div>
+              )
+           })}
+        </div>
+        <div className="flex justify-center gap-4 mt-4 text-xs text-gray-500 border-t pt-2">
+           <div className="flex items-center gap-1"><div className="w-2 h-2 bg-green-500 rounded-full"></div> Correct</div>
+           <div className="flex items-center gap-1"><div className="w-2 h-2 bg-red-400 rounded-full"></div> Incorrect/Other</div>
+        </div>
+      </Card>
+    );
+ };
 
   // --- RENDER ---
-
   if (editingExam) {
+     /* ... (Editor Code - Same as previous, omitted for brevity) ... */
      return (
-      <div className="min-h-screen bg-gray-100 pb-20">
-         <div className="bg-white shadow sticky top-0 z-50 border-b border-gray-200">
-            <div className="container mx-auto px-4 py-4 flex justify-between items-center">
-               <h2 className="text-xl font-bold text-gray-800">Edit Exam</h2>
-               <div className="flex gap-2">
-                 <Button variant="secondary" onClick={() => setEditingExam(null)}>Cancel</Button>
-                 <Button onClick={handleSaveExam}>Save Changes</Button>
-               </div>
-            </div>
-         </div>
-
-         <div className="container mx-auto px-4 py-8 max-w-4xl space-y-6">
-            <Card title="Exam Details">
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                 <div className="col-span-2">
-                    <label className="text-sm font-medium text-gray-700">Exam Title</label>
-                    <input className="w-full p-2 border rounded" value={editingExam.title} onChange={e => setEditingExam({...editingExam, title: e.target.value})} />
-                 </div>
-                 <div className="col-span-2">
-                    <label className="text-sm font-medium text-gray-700">Description</label>
-                    <textarea className="w-full p-2 border rounded" rows={2} value={editingExam.description} onChange={e => setEditingExam({...editingExam, description: e.target.value})} />
-                 </div>
-                 <div>
-                    <label className="text-sm font-medium text-gray-700">Duration (Minutes)</label>
-                    <input type="number" className="w-full p-2 border rounded" value={editingExam.durationMinutes} onChange={e => setEditingExam({...editingExam, durationMinutes: Number(e.target.value)})} />
-                 </div>
-                 <div>
-                    <label className="text-sm font-medium text-gray-700">Assigned Sections</label>
-                    <input className="w-full p-2 border rounded" value={editingExam.assignedSections.join(', ')} onChange={e => setEditingExam({...editingExam, assignedSections: e.target.value.split(',').map(s => s.trim())})} placeholder="SEC01, SEC02"/>
+        <div className="min-h-screen bg-gray-100 pb-20">
+           {/* Re-using previous editor code structure exactly */}
+           <div className="bg-white shadow sticky top-0 z-50 border-b border-gray-200">
+              <div className="container mx-auto px-4 py-4 flex justify-between items-center">
+                 <h2 className="text-xl font-bold text-gray-800">Edit Exam</h2>
+                 <div className="flex gap-2">
+                   <Button variant="secondary" onClick={() => setEditingExam(null)}>Cancel</Button>
+                   <Button onClick={handleSaveExam}>Save Changes</Button>
                  </div>
               </div>
-            </Card>
-
-            <div className="space-y-4">
-              <div className="flex justify-between items-end">
-                 <h3 className="text-lg font-bold text-gray-700">Questions ({editingExam.questions.length})</h3>
-                 <div className="flex gap-2 text-sm">
-                   <Button size="sm" variant="outline" onClick={() => addQuestion(QuestionType.MULTIPLE_CHOICE)}>+ MCQ</Button>
-                   <Button size="sm" variant="outline" onClick={() => addQuestion(QuestionType.SHORT_ANSWER)}>+ Short Answer</Button>
-                   <Button size="sm" variant="outline" onClick={() => addQuestion(QuestionType.JAVA_CODE)}>+ Java Code</Button>
-                 </div>
-              </div>
-              {editingExam.questions.map((q, idx) => (
-                <Card key={q.id} className="relative group">
-                   <div className="absolute right-4 top-4 opacity-100 transition-opacity">
-                      <button onClick={() => removeQuestion(q.id)} className="text-red-400 hover:text-red-600 font-medium text-sm">Delete</button>
+           </div>
+           <div className="container mx-auto px-4 py-8 max-w-4xl space-y-6">
+              <Card title="Exam Details">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                   <div className="col-span-2">
+                      <label className="text-sm font-medium text-gray-700">Exam Title</label>
+                      <input className="w-full p-2 border rounded" value={editingExam.title} onChange={e => setEditingExam({...editingExam, title: e.target.value})} />
                    </div>
-                   <div className="flex gap-4 items-start">
-                      <span className="bg-purple-100 text-purple-700 font-bold px-3 py-1 rounded text-sm mt-1">Q{idx+1}</span>
-                      <div className="flex-1 space-y-4">
-                         <div className="flex gap-4 items-start">
-                           <div className="flex-1 space-y-2">
-                              <textarea className="w-full p-2 border border-gray-300 rounded font-medium h-24" value={q.text} onChange={(e) => updateQuestion(q.id, { text: e.target.value })} placeholder="Question text..."/>
-                              <div className="flex items-center gap-4 bg-gray-50 p-3 rounded border border-gray-200">
-                                 {q.imageUrl ? (
+                   <div className="col-span-2">
+                      <label className="text-sm font-medium text-gray-700">Description</label>
+                      <textarea className="w-full p-2 border rounded" rows={2} value={editingExam.description} onChange={e => setEditingExam({...editingExam, description: e.target.value})} />
+                   </div>
+                   <div>
+                      <label className="text-sm font-medium text-gray-700">Duration (Minutes)</label>
+                      <input type="number" className="w-full p-2 border rounded" value={editingExam.durationMinutes} onChange={e => setEditingExam({...editingExam, durationMinutes: Number(e.target.value)})} />
+                   </div>
+                   <div>
+                      <label className="text-sm font-medium text-gray-700">Assigned Sections</label>
+                      <input className="w-full p-2 border rounded" value={editingExam.assignedSections.join(', ')} onChange={e => setEditingExam({...editingExam, assignedSections: e.target.value.split(',').map(s => s.trim())})} placeholder="SEC01, SEC02"/>
+                   </div>
+                </div>
+              </Card>
+              <div className="space-y-4">
+                 <div className="flex justify-between items-end">
+                    <h3 className="text-lg font-bold text-gray-700">Questions ({editingExam.questions.length})</h3>
+                    <div className="flex gap-2 text-sm">
+                      <Button size="sm" variant="outline" onClick={() => addQuestion(QuestionType.MULTIPLE_CHOICE)}>+ MCQ</Button>
+                      <Button size="sm" variant="outline" onClick={() => addQuestion(QuestionType.SHORT_ANSWER)}>+ Short Answer</Button>
+                      <Button size="sm" variant="outline" onClick={() => addQuestion(QuestionType.JAVA_CODE)}>+ Java Code</Button>
+                    </div>
+                 </div>
+                 {editingExam.questions.map((q, idx) => (
+                    <Card key={q.id} className="relative group">
+                       <div className="absolute right-4 top-4 opacity-100 transition-opacity">
+                          <button onClick={() => removeQuestion(q.id)} className="text-red-400 hover:text-red-600 font-medium text-sm">Delete</button>
+                       </div>
+                       <div className="flex gap-4 items-start">
+                          <span className="bg-purple-100 text-purple-700 font-bold px-3 py-1 rounded text-sm mt-1">Q{idx+1}</span>
+                          <div className="flex-1 space-y-4">
+                             <div className="flex gap-4 items-start">
+                               <div className="flex-1 space-y-2">
+                                  <textarea className="w-full p-2 border border-gray-300 rounded font-medium h-24" value={q.text} onChange={(e) => updateQuestion(q.id, { text: e.target.value })} placeholder="Question text..."/>
+                                  {q.imageUrl ? (
                                     <div className="flex items-center gap-4">
                                        <img src={q.imageUrl} alt="Question" className="h-16 w-16 object-cover rounded border" />
                                        <button onClick={() => updateQuestion(q.id, { imageUrl: '' })} className="text-xs text-red-500 font-bold">Remove Image</button>
@@ -339,82 +410,50 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ user, onLogo
                                  ) : (
                                     <input type="file" accept="image/*" onChange={(e) => handleImageUpload(q.id, e.target.files?.[0] || null)} className="block w-full text-sm text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-purple-50 file:text-purple-700 hover:file:bg-purple-100"/>
                                  )}
-                              </div>
-                           </div>
-                           <div className="w-24"><input type="number" className="w-full p-2 border border-gray-300 rounded text-center" value={q.score} onChange={(e) => updateQuestion(q.id, { score: Number(e.target.value) })} placeholder="Score"/></div>
-                         </div>
-                         
-                         {/* MCQ Options */}
-                         {q.type === QuestionType.MULTIPLE_CHOICE && (
-                           <div className="space-y-2 bg-gray-50 p-3 rounded">
-                             {q.options?.map((opt, oIdx) => (
-                               <div key={oIdx} className="flex items-center gap-2">
-                                  <input type="radio" name={`correct_${q.id}`} checked={q.correctOptionIndex === oIdx} onChange={() => updateQuestion(q.id, { correctOptionIndex: oIdx })}/>
-                                  <input className="flex-1 p-1 border rounded text-sm" value={opt} onChange={(e) => { const newOpts = [...(q.options || [])]; newOpts[oIdx] = e.target.value; updateQuestion(q.id, { options: newOpts }); }}/>
-                                  <button onClick={() => { const newOpts = q.options?.filter((_, i) => i !== oIdx); updateQuestion(q.id, { options: newOpts, correctOptionIndex: 0 }); }} className="text-gray-400">×</button>
                                </div>
-                             ))}
-                             <Button size="sm" variant="secondary" onClick={() => updateQuestion(q.id, { options: [...(q.options||[]), `Option ${(q.options?.length||0)+1}`] })}>+ Add Option</Button>
-                           </div>
-                         )}
-
-                         {/* Short Answer Specifics - RESTORED */}
-                         {q.type === QuestionType.SHORT_ANSWER && (
-                           <div className="space-y-2 bg-gray-50 p-3 rounded">
-                              <p className="text-xs font-bold text-gray-500 uppercase">Accepted Answers</p>
-                              <textarea 
-                                className="w-full p-2 border rounded text-sm" 
-                                placeholder="Enter acceptable answers separated by commas (e.g. Java, java, JAVA)"
-                                value={q.acceptedAnswers?.join(', ')}
-                                onChange={(e) => updateQuestion(q.id, { acceptedAnswers: e.target.value.split(',').map(s => s.trim()) })}
-                              />
-                           </div>
-                         )}
-
-                         {/* Java Code Specifics - RESTORED */}
-                         {q.type === QuestionType.JAVA_CODE && (
-                           <div className="space-y-2 bg-blue-50 p-3 rounded border border-blue-100">
-                              <p className="text-xs font-bold text-blue-700 uppercase">Test Cases (Input / Output)</p>
-                              {q.testCases?.map((tc, tcIdx) => (
-                                <div key={tcIdx} className="grid grid-cols-2 gap-2 mb-2">
-                                   <input 
-                                     className="p-1 border rounded text-sm font-mono" placeholder="Input"
-                                     value={tc.input}
-                                     onChange={(e) => {
-                                        const newTC = [...(q.testCases || [])];
-                                        newTC[tcIdx] = { ...newTC[tcIdx], input: e.target.value };
-                                        updateQuestion(q.id, { testCases: newTC });
-                                     }}
-                                   />
-                                   <div className="flex gap-1">
-                                      <input 
-                                        className="flex-1 p-1 border rounded text-sm font-mono" placeholder="Expected Output"
-                                        value={tc.output}
-                                        onChange={(e) => {
-                                            const newTC = [...(q.testCases || [])];
-                                            newTC[tcIdx] = { ...newTC[tcIdx], output: e.target.value };
-                                            updateQuestion(q.id, { testCases: newTC });
-                                        }}
-                                      />
-                                      <button onClick={() => {
-                                         const newTC = q.testCases?.filter((_, i) => i !== tcIdx);
-                                         updateQuestion(q.id, { testCases: newTC });
-                                      }} className="text-red-400 font-bold px-2">×</button>
+                               <div className="w-24"><input type="number" className="w-full p-2 border border-gray-300 rounded text-center" value={q.score} onChange={(e) => updateQuestion(q.id, { score: Number(e.target.value) })} placeholder="Score"/></div>
+                             </div>
+                             {q.type === QuestionType.MULTIPLE_CHOICE && (
+                               <div className="space-y-2 bg-gray-50 p-3 rounded">
+                                 {q.options?.map((opt, oIdx) => (
+                                   <div key={oIdx} className="flex items-center gap-2">
+                                      <input type="radio" name={`correct_${q.id}`} checked={q.correctOptionIndex === oIdx} onChange={() => updateQuestion(q.id, { correctOptionIndex: oIdx })}/>
+                                      <input className="flex-1 p-1 border rounded text-sm" value={opt} onChange={(e) => { const newOpts = [...(q.options || [])]; newOpts[oIdx] = e.target.value; updateQuestion(q.id, { options: newOpts }); }}/>
+                                      <button onClick={() => { const newOpts = q.options?.filter((_, i) => i !== oIdx); updateQuestion(q.id, { options: newOpts, correctOptionIndex: 0 }); }} className="text-gray-400">×</button>
                                    </div>
-                                </div>
-                              ))}
-                              <Button size="sm" variant="secondary" onClick={() => updateQuestion(q.id, { testCases: [...(q.testCases||[]), {input:'', output:''}] })}>+ Add Test Case</Button>
-                           </div>
-                         )}
-
-                      </div>
-                   </div>
-                </Card>
-              ))}
-            </div>
-         </div>
-      </div>
-    );
+                                 ))}
+                                 <Button size="sm" variant="secondary" onClick={() => updateQuestion(q.id, { options: [...(q.options||[]), `Option ${(q.options?.length||0)+1}`] })}>+ Add Option</Button>
+                               </div>
+                             )}
+                             {q.type === QuestionType.SHORT_ANSWER && (
+                               <div className="space-y-2 bg-gray-50 p-3 rounded">
+                                  <p className="text-xs font-bold text-gray-500 uppercase">Accepted Answers</p>
+                                  <textarea className="w-full p-2 border rounded text-sm" placeholder="Enter acceptable answers separated by commas" value={q.acceptedAnswers?.join(', ')} onChange={(e) => updateQuestion(q.id, { acceptedAnswers: e.target.value.split(',').map(s => s.trim()) })} />
+                               </div>
+                             )}
+                             {q.type === QuestionType.JAVA_CODE && (
+                               <div className="space-y-2 bg-blue-50 p-3 rounded border border-blue-100">
+                                  <p className="text-xs font-bold text-blue-700 uppercase">Test Cases</p>
+                                  {q.testCases?.map((tc, tcIdx) => (
+                                    <div key={tcIdx} className="grid grid-cols-2 gap-2 mb-2">
+                                       <input className="p-1 border rounded text-sm font-mono" placeholder="Input" value={tc.input} onChange={(e) => { const newTC = [...(q.testCases || [])]; newTC[tcIdx] = { ...newTC[tcIdx], input: e.target.value }; updateQuestion(q.id, { testCases: newTC }); }} />
+                                       <div className="flex gap-1">
+                                          <input className="flex-1 p-1 border rounded text-sm font-mono" placeholder="Output" value={tc.output} onChange={(e) => { const newTC = [...(q.testCases || [])]; newTC[tcIdx] = { ...newTC[tcIdx], output: e.target.value }; updateQuestion(q.id, { testCases: newTC }); }} />
+                                          <button onClick={() => { const newTC = q.testCases?.filter((_, i) => i !== tcIdx); updateQuestion(q.id, { testCases: newTC }); }} className="text-red-400 font-bold px-2">×</button>
+                                       </div>
+                                    </div>
+                                  ))}
+                                  <Button size="sm" variant="secondary" onClick={() => updateQuestion(q.id, { testCases: [...(q.testCases||[]), {input:'', output:''}] })}>+ Add Test Case</Button>
+                               </div>
+                             )}
+                          </div>
+                       </div>
+                    </Card>
+                 ))}
+              </div>
+           </div>
+        </div>
+     );
   }
 
   // --- STANDARD DASHBOARD VIEW ---
@@ -440,7 +479,7 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ user, onLogo
       <main className="container mx-auto px-4 py-8 flex-1">
         
         {activeTab === 'EXAMS' && (
-          <div className="space-y-6">
+          <div className="space-y-6 animate-fade-in">
             <div className="flex justify-between items-center">
               <h2 className="text-2xl font-bold text-gray-800">My Exams</h2>
               <Button onClick={handleCreateExam}>+ New Exam</Button>
@@ -477,7 +516,7 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ user, onLogo
         )}
 
         {activeTab === 'STUDENTS' && (
-          <div className="max-w-4xl mx-auto space-y-6">
+          <div className="max-w-4xl mx-auto space-y-6 animate-fade-in">
             <Card title="Batch Import Students">
               <div className="space-y-4">
                 <div className="bg-yellow-50 border-l-4 border-yellow-400 p-4">
@@ -492,24 +531,39 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ user, onLogo
             </Card>
 
             <Card title={`Student Roster (${students.length})`}>
+              <div className="p-4 bg-gray-50 border-b flex items-center gap-4">
+                 <input 
+                    type="text" 
+                    placeholder="Search Roster..." 
+                    className="flex-1 p-2 border rounded text-sm"
+                    value={rosterSearch}
+                    onChange={(e) => setRosterSearch(e.target.value)}
+                 />
+              </div>
               <div className="overflow-x-auto">
                 <table className="w-full text-sm text-left text-gray-500">
                    <thead className="text-xs text-gray-700 uppercase bg-gray-50">
                      <tr>
-                       <th className="px-6 py-3">Student ID</th>
-                       <th className="px-6 py-3">Name</th>
-                       <th className="px-6 py-3">Section</th>
+                       <th className="px-6 py-3 cursor-pointer hover:bg-gray-100" onClick={() => handleRosterSort('studentId')}>
+                          Student ID {rosterSortConfig.key === 'studentId' && (rosterSortConfig.direction === 'ASC' ? '▲' : '▼')}
+                       </th>
+                       <th className="px-6 py-3 cursor-pointer hover:bg-gray-100" onClick={() => handleRosterSort('name')}>
+                          Name {rosterSortConfig.key === 'name' && (rosterSortConfig.direction === 'ASC' ? '▲' : '▼')}
+                       </th>
+                       <th className="px-6 py-3 cursor-pointer hover:bg-gray-100" onClick={() => handleRosterSort('section')}>
+                          Section {rosterSortConfig.key === 'section' && (rosterSortConfig.direction === 'ASC' ? '▲' : '▼')}
+                       </th>
                      </tr>
                    </thead>
                    <tbody>
-                     {students.length === 0 ? (
-                       <tr><td colSpan={3} className="px-6 py-4 text-center">No students found. Import some!</td></tr>
+                     {getSortedRoster.length === 0 ? (
+                       <tr><td colSpan={3} className="px-6 py-4 text-center">No students found.</td></tr>
                      ) : (
-                       students.map(s => (
-                         <tr key={s.id} className="bg-white border-b hover:bg-gray-50">
+                       getSortedRoster.map(s => (
+                         <tr key={s.id} className="bg-white border-b hover:bg-gray-50 transition-colors">
                            <td className="px-6 py-4 font-bold">{s.studentId}</td>
                            <td className="px-6 py-4">{s.name}</td>
-                           <td className="px-6 py-4"><span className="bg-purple-100 text-purple-800 text-xs px-2 py-1 rounded-full">{s.section}</span></td>
+                           <td className="px-6 py-4"><span className="bg-purple-100 text-purple-800 text-xs px-2 py-1 rounded-full">{s.section || 'N/A'}</span></td>
                          </tr>
                        ))
                      )}
@@ -521,66 +575,94 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ user, onLogo
         )}
 
         {activeTab === 'MONITOR' && (
-          <div className="space-y-6">
-            <div className="flex items-center gap-4 mb-6">
-              <h2 className="text-2xl font-bold text-gray-800">Live Monitor</h2>
-              <select className="p-2 border rounded-lg bg-white" value={monitoringExamId || ''} onChange={(e) => setMonitoringExamId(e.target.value)}>
-                <option value="">Select active exam to monitor...</option>
-                {exams.map(e => <option key={e.id} value={e.id}>{e.title}</option>)}
-              </select>
+          <div className="space-y-6 animate-fade-in">
+            <div className="flex flex-col md:flex-row md:items-center gap-4 mb-4 justify-between">
+              <div className="flex items-center gap-4">
+                 <h2 className="text-2xl font-bold text-gray-800">Live Monitor</h2>
+                 <select className="p-2 border rounded-lg bg-white shadow-sm font-medium" value={monitoringExamId || ''} onChange={(e) => setMonitoringExamId(e.target.value)}>
+                   <option value="">-- Select Exam --</option>
+                   {exams.map(e => <option key={e.id} value={e.id}>{e.title}</option>)}
+                 </select>
+              </div>
             </div>
 
             {!monitoringExamId ? (
               <div className="text-center py-20 text-gray-400 border-2 border-dashed border-gray-300 rounded-xl">Select an exam to view real-time student activity.</div>
             ) : (
               <div>
-                 {/* Overall Stats Section */}
+                 {/* Monitor Toolbar */}
+                 <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-200 mb-6 flex flex-wrap gap-4 items-center">
+                    <input 
+                      type="text" 
+                      placeholder="Search Name or ID..." 
+                      className="p-2 border rounded-lg flex-1 min-w-[200px]"
+                      value={monitorSearch}
+                      onChange={(e) => setMonitorSearch(e.target.value)}
+                    />
+                    
+                    <select 
+                      className="p-2 border rounded-lg"
+                      value={monitorSectionFilter}
+                      onChange={(e) => setMonitorSectionFilter(e.target.value)}
+                    >
+                      <option value="ALL">All Sections</option>
+                      {uniqueSections.map(sec => <option key={sec} value={sec}>{sec}</option>)}
+                    </select>
+
+                    <div className="flex items-center gap-2 text-sm text-gray-600">
+                       <span>Sort By:</span>
+                       <select 
+                          className="p-2 border rounded-lg font-medium"
+                          value={monitorSortBy}
+                          onChange={(e) => setMonitorSortBy(e.target.value as SortOption)}
+                        >
+                          <option value="ID">Student ID</option>
+                          <option value="NAME">Name</option>
+                          <option value="SECTION">Section</option>
+                          <option value="STATUS">Status</option>
+                          <option value="PROGRESS">Progress %</option>
+                        </select>
+                    </div>
+                 </div>
+
                  {renderQuestionStats()}
 
                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                   {getMergedMonitorData().length === 0 && <p className="text-gray-500 col-span-3 text-center">No students assigned to this exam's sections.</p>}
+                   {processedMonitorData.length === 0 && (
+                     <p className="text-gray-500 col-span-3 text-center py-10">No students match your filter.</p>
+                   )}
                    
-                   {getMergedMonitorData().map(({ user, progress }) => {
-                     const exam = exams.find(e => e.id === monitoringExamId);
-                     const studentAnswers = progress.answers || {};
-                     const answerCount = Object.keys(studentAnswers).length;
-                     
-                     // Improved Progress Logic: 
-                     // 1. If Completed, force 100% (Visual fix for legacy data issues)
-                     // 2. Else calculate based on answers or index
-                     let progressPercent = 0;
-                     if (progress.status === 'COMPLETED') {
-                        progressPercent = 100;
-                     } else if (exam) {
-                        const count = Math.max(answerCount, progress.currentQuestionIndex);
-                        progressPercent = Math.round((count / exam.questions.length) * 100);
-                        if(progressPercent > 100) progressPercent = 100;
-                     }
-
-                     const isIdle = progress.status === 'IDLE';
+                   {processedMonitorData.map(({ user, display }) => {
+                     const isIdle = display.status === 'IDLE';
 
                      return (
-                       <div key={user.studentId} className={`rounded-lg p-4 shadow border flex flex-col gap-3 transition-colors ${isIdle ? 'bg-gray-50 border-gray-200 opacity-75' : 'bg-white border-gray-200'}`}>
-                         <div className="flex justify-between">
+                       <div key={user.studentId} className={`rounded-lg p-4 shadow border flex flex-col gap-3 transition-colors relative ${isIdle ? 'bg-gray-50 border-gray-200 opacity-75' : 'bg-white border-gray-200'}`}>
+                         <div className="flex justify-between items-start">
                            <div>
                              <h4 className="font-bold text-gray-900">{user.name}</h4>
-                             <span className="text-xs text-gray-500">ID: {user.studentId}</span>
+                             <div className="flex items-center gap-2 mt-1">
+                                <span className="text-xs font-mono bg-gray-100 px-1 rounded">{user.studentId}</span>
+                                <span className="text-xs bg-purple-100 text-purple-800 px-2 py-0.5 rounded-full">{user.section || 'N/A'}</span>
+                             </div>
                            </div>
-                           <span className={`px-2 py-1 text-xs rounded-full h-fit font-semibold 
-                             ${progress.status === 'COMPLETED' ? 'bg-green-100 text-green-800' : 
-                               progress.status === 'IN_PROGRESS' ? 'bg-blue-100 text-blue-800' : 'bg-gray-200 text-gray-600'}`}>
-                             {progress.status === 'IDLE' ? 'NOT STARTED' : progress.status}
+                           <span className={`px-2 py-1 text-xs rounded-full h-fit font-bold border 
+                             ${display.status === 'COMPLETED' ? 'bg-green-100 text-green-700 border-green-200' : 
+                               display.status === 'IN_PROGRESS' ? 'bg-blue-100 text-blue-700 border-blue-200' : 'bg-gray-100 text-gray-500 border-gray-200'}`}>
+                             {display.status === 'IDLE' ? 'NOT STARTED' : display.status}
                            </span>
                          </div>
-                         <div className="w-full bg-gray-200 rounded-full h-2.5">
-                           <div className={`h-2.5 rounded-full transition-all duration-500 ${progress.status === 'COMPLETED' ? 'bg-green-500' : 'bg-purple-600'}`} style={{ width: `${progressPercent}%` }}></div>
+                         
+                         <div className="w-full bg-gray-200 rounded-full h-2.5 mt-2">
+                           <div className={`h-2.5 rounded-full transition-all duration-500 ${display.status === 'COMPLETED' ? 'bg-green-500' : 'bg-purple-600'}`} style={{ width: `${display.percent}%` }}></div>
                          </div>
-                         <div className="flex justify-between text-xs text-gray-500">
-                           <span>Progress: {progressPercent}%</span>
-                           <span>{isIdle ? '-' : `Current Q: ${progress.currentQuestionIndex + 1}`}</span>
+                         
+                         <div className="flex justify-between text-xs text-gray-500 font-medium">
+                           <span>{display.percent}% Done</span>
+                           <span>{isIdle ? '-' : `Q: ${display.currentQ + 1}`}</span>
                          </div>
-                         <div className="text-xs text-right text-gray-400 mt-2">
-                           {isIdle ? 'Waiting...' : `Last Active: ${new Date(progress.lastUpdated).toLocaleTimeString()}`}
+                         
+                         <div className="text-xs text-right text-gray-400 mt-1 border-t pt-2">
+                           {isIdle ? 'Waiting...' : `Last Active: ${new Date(display.lastUpdated).toLocaleTimeString()}`}
                          </div>
                        </div>
                      );
