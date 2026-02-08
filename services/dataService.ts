@@ -15,10 +15,10 @@ const supabase = (SUPABASE_URL && SUPABASE_KEY)
 // ==========================================
 // MOCK DATA STORAGE (Local Storage Wrapper)
 // ==========================================
-// Using LocalStorage allows tabs (Student vs Teacher) to share state in development without a backend.
 
 const STORAGE_KEYS = {
   USERS: 'uniexam_mock_users',
+  PASSWORDS: 'uniexam_mock_passwords', // Added to persist passwords
   EXAMS: 'uniexam_mock_exams',
   PROGRESS: 'uniexam_mock_progress'
 };
@@ -42,7 +42,11 @@ const defaultUsers: User[] = [
   { id: 's1', name: 'Alice Student', role: UserRole.STUDENT, studentId: '64001', section: 'SEC01' },
   { id: 's2', name: 'Bob Student', role: UserRole.STUDENT, studentId: '64002', section: 'SEC02' }
 ];
-const mockPasswords: Record<string, string> = { 'Dr. Smith': 'admin123' };
+
+// Seed passwords. NOTE: In a real app, never store plain text passwords in LS.
+const defaultPasswords: Record<string, string> = { 
+    'Dr. Smith': 'admin123' 
+};
 
 const defaultExams: Exam[] = [
   {
@@ -85,6 +89,7 @@ const defaultExams: Exam[] = [
 
 // --- GETTERS (Always fetch fresh from Storage) ---
 const getMockUsers = () => loadMockData<User[]>(STORAGE_KEYS.USERS, defaultUsers);
+const getMockPasswords = () => loadMockData<Record<string, string>>(STORAGE_KEYS.PASSWORDS, defaultPasswords);
 const getMockExams = () => loadMockData<Exam[]>(STORAGE_KEYS.EXAMS, defaultExams);
 const getMockProgress = () => loadMockData<StudentProgress[]>(STORAGE_KEYS.PROGRESS, []);
 
@@ -106,7 +111,7 @@ const mapExam = (e: any): Exam => ({
   durationMinutes: e.duration_minutes,
   isActive: e.is_active,
   assignedSections: e.assigned_sections || [],
-  questions: (e.questions || []).map(mapQuestion).sort((a: Question, b: Question) => a.text.localeCompare(b.text)) // Simple sort
+  questions: (e.questions || []).map(mapQuestion).sort((a: Question, b: Question) => a.text.localeCompare(b.text))
 });
 
 const mapQuestion = (q: any): Question => ({
@@ -143,7 +148,7 @@ export const loginTeacher = async (name: string, password: string): Promise<User
       .from('users')
       .select('*')
       .eq('role', 'TEACHER')
-      .eq('name', name)
+      .ilike('name', name) // Case insensitive match for DB
       .eq('password', password)
       .single();
     if (error || !data) return null;
@@ -151,11 +156,21 @@ export const loginTeacher = async (name: string, password: string): Promise<User
   }
   
   const mockUsers = getMockUsers();
-  // Check predefined password for default user, or allow any for newly registered
-  const isValid = (mockPasswords[name] === password) || (mockUsers.some(u => u.name === name && u.role === UserRole.TEACHER));
+  const mockPasswords = getMockPasswords();
   
-  const user = mockUsers.find(u => u.role === UserRole.TEACHER && u.name === name);
-  if (user && isValid) return user;
+  // Find user (Case Insensitive)
+  const user = mockUsers.find(u => 
+    u.role === UserRole.TEACHER && 
+    u.name.toLowerCase().trim() === name.toLowerCase().trim()
+  );
+
+  if (user) {
+      // Check password (Exact match) against the stored password for the *original* name key
+      // or try to find the key in passwords map that matches the user name
+      const storedPassword = mockPasswords[user.name];
+      if (storedPassword === password) return user;
+  }
+  
   return null;
 };
 
@@ -171,26 +186,38 @@ export const registerTeacher = async (name: string, password: string): Promise<U
   }
   
   const mockUsers = getMockUsers();
-  const existing = mockUsers.find(u => u.name === name && u.role === UserRole.TEACHER);
+  
+  // Check duplicate (Case Insensitive)
+  const existing = mockUsers.find(u => 
+      u.role === UserRole.TEACHER && 
+      u.name.toLowerCase().trim() === name.toLowerCase().trim()
+  );
+
   if (existing) throw new Error("Username already taken");
   
-  const newUser: User = { id: `t_${Date.now()}`, name, role: UserRole.TEACHER };
-  const updatedUsers = [...mockUsers, newUser];
+  const newUser: User = { id: `t_${Date.now()}`, name: name.trim(), role: UserRole.TEACHER };
   
+  // 1. Save User
+  const updatedUsers = [...mockUsers, newUser];
   saveMockData(STORAGE_KEYS.USERS, updatedUsers);
-  mockPasswords[name] = password; // Note: In a real app/localstorage, passwords should be stored securely
+  
+  // 2. Save Password
+  const mockPasswords = getMockPasswords();
+  mockPasswords[newUser.name] = password;
+  saveMockData(STORAGE_KEYS.PASSWORDS, mockPasswords);
   
   return newUser;
 };
 
 export const loginStudent = async (studentId: string): Promise<User | null> => {
+  const cleanId = studentId.trim();
   if (supabase) {
-    const { data, error } = await supabase.from('users').select('*').eq('student_id', studentId).single();
+    const { data, error } = await supabase.from('users').select('*').eq('student_id', cleanId).single();
     if (error || !data) return null;
     return mapUser(data);
   }
   const mockUsers = getMockUsers();
-  return mockUsers.find(u => u.studentId === studentId && u.role === UserRole.STUDENT) || null;
+  return mockUsers.find(u => u.studentId === cleanId && u.role === UserRole.STUDENT) || null;
 };
 
 export const importStudents = async (studentData: {id: string, name: string, section: string}[]) => {
@@ -212,7 +239,6 @@ export const importStudents = async (studentData: {id: string, name: string, sec
     role: UserRole.STUDENT
   }));
   
-  // Merge and avoid duplicates based on studentId
   const existingIds = new Set(mockUsers.map(u => u.studentId));
   const uniqueNewUsers = newUsers.filter(nu => !existingIds.has(nu.studentId));
   
@@ -233,7 +259,6 @@ export const uploadExamImage = async (file: File): Promise<string> => {
     const { data } = supabase.storage.from('exam-images').getPublicUrl(filePath);
     return data.publicUrl;
   }
-  // Fallback for mock mode: verify file reading
   return new Promise((resolve) => {
       const reader = new FileReader();
       reader.onloadend = () => resolve(reader.result as string);
@@ -475,7 +500,6 @@ export const getExamResults = async (examId: string): Promise<ExamResult[]> => {
 // ==========================================
 // REAL REMOTE COMPILER (via Piston API)
 // ==========================================
-// Using Piston API (https://github.com/engineer-man/piston) for real Java execution
 const PISTON_API_URL = "https://emkc.org/api/v2/piston/execute";
 
 export const compileJavaCode = async (code: string, testCases: {input: string, output: string}[]): Promise<{passed: boolean, output: string}> => {
@@ -486,7 +510,6 @@ export const compileJavaCode = async (code: string, testCases: {input: string, o
   let finalOutputDetails = "";
   let allPassed = true;
 
-  // Normalization Helper: Collapses newlines and multiple spaces into single spaces
   const normalize = (str: string) => str.replace(/\s+/g, ' ').trim();
 
   const runTestCase = async (input: string, expected: string, index: number) => {
@@ -528,7 +551,6 @@ export const compileJavaCode = async (code: string, testCases: {input: string, o
           // Output from stdout
           const actualOutput = result.run.stdout ? result.run.stdout.trim() : "";
           
-          // Use whitespace-insensitive comparison
           const normalizedExpected = normalize(expected);
           const normalizedActual = normalize(actualOutput);
           
