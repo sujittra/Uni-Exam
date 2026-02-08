@@ -40,6 +40,23 @@
    - นำ Comment ในส่วน `Supabase Configuration` ออก
    - ใส่ **Project URL** และ **API Key (anon key)** ของคุณที่ได้จาก Supabase (เมนู Project Settings > API)
 
+## ⚠️ การแก้ปัญหา (Troubleshooting)
+
+### Error: `PGRST204: Could not find the 'started_at' column`
+หากคุณเจอ Error นี้ แสดงว่า Database ของคุณถูกสร้างด้วย Schema เก่า และยังไม่มีคอลัมน์ `started_at` ที่เพิ่มมาใหม่
+**วิธีแก้ไข:**
+1. ไปที่ Supabase > SQL Editor
+2. กด New Query
+3. Run คำสั่งต่อไปนี้:
+
+```sql
+ALTER TABLE public.student_progress 
+ADD COLUMN IF NOT EXISTS started_at timestamp with time zone;
+
+-- สั่งให้ API Refresh Cache
+NOTIFY pgrst, 'reload schema';
+```
+
 ## หมายเหตุ
 - ระบบ Dashboard ใช้อาศัยฟีเจอร์ **Realtime** ซึ่งสคริปต์ SQL ได้เปิดใช้งานให้แล้วในบรรทัด `alter publication supabase_realtime...`
 - ระบบ Login ปัจจุบันออกแบบมาให้ใช้ `student_id` ในตาราง `users` ในการตรวจสอบสิทธิ์แบบง่าย (เพื่อให้ตรงกับ requirement นำเข้า Excel) โดยไม่ต้องใช้ Supabase Auth (Email/Password) ที่ซับซ้อนเกินไปสำหรับเฟสแรก

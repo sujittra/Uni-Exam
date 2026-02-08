@@ -414,6 +414,16 @@ export const submitStudentProgress = async (progress: StudentProgress): Promise<
       const { error } = await supabase.from('student_progress').upsert(payload, { onConflict: 'student_id, exam_id' });
       
       if (error) {
+        // FALLBACK: If column 'started_at' is missing (PGRST204), try sending without it
+        if (error.code === 'PGRST204' && payload.started_at) {
+             console.warn("Supabase schema mismatch (missing started_at). Retrying payload without it.");
+             const { started_at, ...fallbackPayload } = payload;
+             const { error: fallbackError } = await supabase.from('student_progress').upsert(fallbackPayload, { onConflict: 'student_id, exam_id' });
+             
+             if (!fallbackError) return { success: true };
+             return { success: false, error: `${fallbackError.code}: ${fallbackError.message}` };
+        }
+
         // Detailed Error Logging
         console.error("SUPABASE UPLOAD ERROR:", error);
         return { success: false, error: `${error.code}: ${error.message} (${error.details || ''})` };
