@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { User, Exam, Question, QuestionType, StudentProgress, TestCase } from '../types';
-import { saveExam, deleteExam, getExamsForTeacher, getLiveProgress, importStudents, updateExamStatus, getExamResults, uploadExamImage } from '../services/dataService';
+import { saveExam, deleteExam, getExamsForTeacher, getLiveProgress, importStudents, updateExamStatus, getExamResults, uploadExamImage, getStudents } from '../services/dataService';
 import { Card } from '../components/Card';
 import { Button } from '../components/Button';
 
@@ -12,6 +12,7 @@ interface TeacherDashboardProps {
 export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ user, onLogout }) => {
   const [activeTab, setActiveTab] = useState<'EXAMS' | 'STUDENTS' | 'MONITOR'>('EXAMS');
   const [exams, setExams] = useState<Exam[]>([]);
+  const [students, setStudents] = useState<User[]>([]);
   
   // Editor State
   const [editingExam, setEditingExam] = useState<Exam | null>(null);
@@ -27,6 +28,12 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ user, onLogo
   useEffect(() => {
     loadExams();
   }, []);
+
+  useEffect(() => {
+    if (activeTab === 'STUDENTS') {
+      loadStudents();
+    }
+  }, [activeTab]);
 
   // Polling for monitoring
   useEffect(() => {
@@ -45,6 +52,11 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ user, onLogo
   const loadExams = async () => {
     const data = await getExamsForTeacher();
     setExams([...data]);
+  };
+
+  const loadStudents = async () => {
+    const data = await getStudents();
+    setStudents(data);
   };
 
   const handleCreateExam = () => {
@@ -92,6 +104,7 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ user, onLogo
       await importStudents(data);
       setImportStatus(`Success! Imported ${data.length} students.`);
       setImportText('');
+      loadStudents(); // Refresh list
     } catch (e) {
       setImportStatus('Error parsing CSV. Use format: ID, Name, Section');
     }
@@ -438,17 +451,44 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ user, onLogo
         )}
 
         {activeTab === 'STUDENTS' && (
-          <div className="max-w-3xl mx-auto">
+          <div className="max-w-4xl mx-auto space-y-6">
             <Card title="Batch Import Students">
               <div className="space-y-4">
                 <div className="bg-yellow-50 border-l-4 border-yellow-400 p-4">
                    <p className="text-sm text-yellow-700">Format: <code>StudentID, FullName, SectionID</code></p>
                 </div>
-                <textarea className="w-full h-64 p-4 border border-gray-300 rounded-lg font-mono text-sm" placeholder="Paste CSV data..." value={importText} onChange={(e) => setImportText(e.target.value)}></textarea>
+                <textarea className="w-full h-32 p-4 border border-gray-300 rounded-lg font-mono text-sm" placeholder="Paste CSV data here..." value={importText} onChange={(e) => setImportText(e.target.value)}></textarea>
                 <div className="flex justify-between items-center">
                   <span className="text-sm font-medium text-green-600">{importStatus}</span>
                   <Button onClick={handleImportStudents}>Import Data</Button>
                 </div>
+              </div>
+            </Card>
+
+            <Card title={`Student Roster (${students.length})`}>
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm text-left text-gray-500">
+                   <thead className="text-xs text-gray-700 uppercase bg-gray-50">
+                     <tr>
+                       <th className="px-6 py-3">Student ID</th>
+                       <th className="px-6 py-3">Name</th>
+                       <th className="px-6 py-3">Section</th>
+                     </tr>
+                   </thead>
+                   <tbody>
+                     {students.length === 0 ? (
+                       <tr><td colSpan={3} className="px-6 py-4 text-center">No students found. Import some!</td></tr>
+                     ) : (
+                       students.map(s => (
+                         <tr key={s.id} className="bg-white border-b hover:bg-gray-50">
+                           <td className="px-6 py-4 font-bold">{s.studentId}</td>
+                           <td className="px-6 py-4">{s.name}</td>
+                           <td className="px-6 py-4"><span className="bg-purple-100 text-purple-800 text-xs px-2 py-1 rounded-full">{s.section}</span></td>
+                         </tr>
+                       ))
+                     )}
+                   </tbody>
+                </table>
               </div>
             </Card>
           </div>
@@ -476,7 +516,17 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ user, onLogo
                    {liveData.map(student => {
                      const exam = exams.find(e => e.id === monitoringExamId);
                      const studentAnswers = student.answers || {};
-                     const progressPercent = exam ? Math.round((Object.keys(studentAnswers).length / exam.questions.length) * 100) : 0;
+                     const answerCount = Object.keys(studentAnswers).length;
+                     
+                     // Improved Progress Logic: If answers are missing but index > 0, use index
+                     let progressPercent = 0;
+                     if (exam) {
+                        const count = Math.max(answerCount, student.currentQuestionIndex);
+                        progressPercent = Math.round((count / exam.questions.length) * 100);
+                        // Cap at 100
+                        if(progressPercent > 100) progressPercent = 100;
+                     }
+
                      return (
                        <div key={student.studentId} className="bg-white rounded-lg p-4 shadow border border-gray-200 flex flex-col gap-3">
                          <div className="flex justify-between">

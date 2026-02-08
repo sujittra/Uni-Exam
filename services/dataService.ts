@@ -215,6 +215,21 @@ export const loginStudent = async (studentId: string): Promise<User | null> => {
   return mockUsers.find(u => u.studentId === cleanId && u.role === UserRole.STUDENT) || null;
 };
 
+// NEW: Get all students for Roster view
+export const getStudents = async (): Promise<User[]> => {
+  if (supabase) {
+    const { data, error } = await supabase
+      .from('users')
+      .select('*')
+      .eq('role', 'STUDENT')
+      .order('student_id', { ascending: true });
+      
+    if (error) return [];
+    return data.map(mapUser);
+  }
+  return getMockUsers().filter(u => u.role === UserRole.STUDENT);
+};
+
 export const importStudents = async (studentData: {id: string, name: string, section: string}[]) => {
   if (supabase) {
     const { error } = await supabase.from('users').upsert(
