@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { User, Exam, Question, QuestionType, StudentProgress } from '../types';
 import { getExamsForStudent, submitStudentProgress, compileJavaCode, getStudentProgress } from '../services/dataService';
 import { Button } from '../components/Button';
@@ -18,7 +18,12 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
   
   const [activeExam, setActiveExam] = useState<Exam | null>(null);
   const [currentQuestionIdx, setCurrentQuestionIdx] = useState(0);
+  
+  // State for UI rendering
   const [answers, setAnswers] = useState<Record<string, any>>({});
+  // Ref for Syncing (Guarantees latest value without stale closures)
+  const answersRef = useRef<Record<string, any>>({});
+  
   const [timeLeft, setTimeLeft] = useState(0);
   const [examStartTime, setExamStartTime] = useState<number>(0);
   
@@ -37,8 +42,7 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
   useEffect(() => {
     if (activeExam && examStartTime > 0) {
       const timer = setInterval(() => {
-        // Calculate remaining based on wall-clock time (Start Time vs Now)
-        // This ensures time keeps running even if browser is closed.
+        // Calculate remaining based on wall-clock time
         const now = Date.now();
         const elapsedSeconds = Math.floor((now - examStartTime) / 1000);
         const durationSeconds = activeExam.durationMinutes * 60;
@@ -50,32 +54,27 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
           clearInterval(timer);
         } else {
           setTimeLeft(remaining);
-          // Sync progress to Server every 30 seconds
+          // Sync progress to Server every 30 seconds using REF to avoid stale state
           if (remaining % 30 === 0) {
-             syncProgress(activeExam.id, currentQuestionIdx, answers, 'IN_PROGRESS', examStartTime);
+             syncProgress(activeExam.id, currentQuestionIdx, answersRef.current, 'IN_PROGRESS', examStartTime);
           }
         }
       }, 1000);
       return () => clearInterval(timer);
     }
-  }, [activeExam, examStartTime, answers, currentQuestionIdx]);
+  }, [activeExam, examStartTime, currentQuestionIdx]); // Removed answers from dependency to avoid timer reset
 
   const loadExamsAndStatus = async () => {
     const exams = await getExamsForStudent(user);
     setAvailableExams(exams);
     
-    // Check status for each exam (Merge DB and LocalStorage to show correct status in Lobby)
     const statuses: Record<string, StudentProgress> = {};
     for (const exam of exams) {
-       // 1. Get DB Status
        const dbProg = await getStudentProgress(user.studentId!, exam.id);
-       
-       // 2. Get Local Status
        const localKey = getStorageKey(user.studentId!, exam.id);
        const localStr = localStorage.getItem(localKey);
        const localProg = localStr ? JSON.parse(localStr) : null;
 
-       // 3. Use the latest one
        let finalProg = dbProg;
        if (localProg && dbProg) {
           if (localProg.lastUpdated > dbProg.lastUpdated) finalProg = localProg;
@@ -89,33 +88,25 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
   };
 
   const initExamSession = async (exam: Exam) => {
-    // 0. Immediate check against current UI state
     if (examStatuses[exam.id]?.status === 'COMPLETED') {
         alert("You have already completed this exam.");
         return;
     }
 
-    // 1. Fetch Latest Data (Priority: LocalStorage > DB) to handle offline/disconnect cases
     const localKey = getStorageKey(user.studentId!, exam.id);
     const localStr = localStorage.getItem(localKey);
     const localData = localStr ? JSON.parse(localStr) : null;
-    
-    // We already have DB status from loadExamsAndStatus, but let's refresh to be safe
     const dbData = await getStudentProgress(user.studentId!, exam.id);
     
     let finalData = null;
-    
-    // Compare timestamps to find the most recent state
     if (localData && dbData) {
         finalData = (localData.lastUpdated > dbData.lastUpdated) ? localData : dbData;
     } else {
         finalData = localData || dbData;
     }
 
-    // Safety Check: If already completed, prevent restart
     if (finalData && finalData.status === 'COMPLETED') {
         alert("You have already completed this exam.");
-        // Force refresh statuses to update UI
         await loadExamsAndStatus();
         return;
     }
@@ -125,46 +116,42 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
     let savedAnswers = {};
 
     if (finalData && finalData.status === 'IN_PROGRESS' && finalData.startedAt) {
-      // RESUME SESSION
       startTime = finalData.startedAt;
       startIdx = finalData.currentQuestionIndex || 0;
       savedAnswers = finalData.answers || {};
-      
-      // If we resumed from LocalStorage (because it was newer), we should try to sync to DB immediately
-      if (finalData === localData) {
-          syncProgress(exam.id, startIdx, savedAnswers, 'IN_PROGRESS', startTime);
-      }
     } else {
-      // START NEW SESSION
       await syncProgress(exam.id, 0, {}, 'IN_PROGRESS', startTime);
-      // Init Local Storage immediately
       saveToLocal(exam.id, 0, {}, startTime, 'IN_PROGRESS');
     }
 
     setExamStartTime(startTime);
     setCurrentQuestionIdx(startIdx);
+    
+    // Initialize both State and Ref
     setAnswers(savedAnswers);
+    answersRef.current = savedAnswers;
+    
     setActiveExam(exam);
     setShowTOS(null);
   };
 
   const syncProgress = async (examId: string, idx: number, currAnswers: any, status: 'IN_PROGRESS' | 'COMPLETED', startedAt: number) => {
+    // Double check we aren't sending empty answers if we have them in ref
+    const finalAnswers = Object.keys(currAnswers).length > 0 ? currAnswers : answersRef.current;
+    
     const progress: StudentProgress = {
       studentId: user.studentId!,
       studentName: user.name,
       examId: examId,
       currentQuestionIndex: idx,
-      answers: currAnswers,
+      answers: finalAnswers,
       score: 0,
       status,
       startedAt: startedAt,
       lastUpdated: Date.now()
     };
     
-    // 1. Update LocalStorage immediately (Acts as offline cache)
-    saveToLocal(examId, idx, currAnswers, startedAt, status);
-
-    // 2. Send to Server (Async)
+    saveToLocal(examId, idx, finalAnswers, startedAt, status);
     await submitStudentProgress(progress); 
   };
 
@@ -183,10 +170,14 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
   };
 
   const handleAnswer = (val: any) => {
-    const newAnswers = { ...answers, [activeExam!.questions[currentQuestionIdx].id]: val };
-    setAnswers(newAnswers);
+    const qId = activeExam!.questions[currentQuestionIdx].id;
+    const newAnswers = { ...answers, [qId]: val };
     
-    // Save to LocalStorage immediately on every input
+    // Update State (for UI)
+    setAnswers(newAnswers);
+    // Update Ref (for Sync logic)
+    answersRef.current = newAnswers;
+    
     saveToLocal(activeExam!.id, currentQuestionIdx, newAnswers, examStartTime, 'IN_PROGRESS');
   };
 
@@ -203,9 +194,9 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
       const nextIdx = currentQuestionIdx + 1;
       setCurrentQuestionIdx(nextIdx);
       
-      // Save position to LocalStorage & Server
-      saveToLocal(activeExam!.id, nextIdx, answers, examStartTime, 'IN_PROGRESS');
-      syncProgress(activeExam!.id, nextIdx, answers, 'IN_PROGRESS', examStartTime);
+      // Use Ref to ensure we send the latest answers
+      saveToLocal(activeExam!.id, nextIdx, answersRef.current, examStartTime, 'IN_PROGRESS');
+      syncProgress(activeExam!.id, nextIdx, answersRef.current, 'IN_PROGRESS', examStartTime);
       
       setCodeOutput(''); 
     }
@@ -215,9 +206,7 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
     if (currentQuestionIdx > 0) {
       const prevIdx = currentQuestionIdx - 1;
       setCurrentQuestionIdx(prevIdx);
-      
-      // Save position to LocalStorage
-      saveToLocal(activeExam!.id, prevIdx, answers, examStartTime, 'IN_PROGRESS');
+      saveToLocal(activeExam!.id, prevIdx, answersRef.current, examStartTime, 'IN_PROGRESS');
     }
   };
 
@@ -228,10 +217,9 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
       return;
     }
     
-    // 1. Final Sync (Await ensures DB/Local is updated)
-    await syncProgress(activeExam.id, currentQuestionIdx, answers, 'COMPLETED', examStartTime);
+    // Use Ref to ensure absolute latest state is sent
+    await syncProgress(activeExam.id, currentQuestionIdx, answersRef.current, 'COMPLETED', examStartTime);
     
-    // 2. Optimistic Update: Update UI state immediately before fetch
     setExamStatuses(prev => ({
       ...prev,
       [activeExam.id]: {
@@ -242,11 +230,7 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
     }));
 
     if(!force) alert('Exam Submitted Successfully!');
-    
-    // 3. Close Exam View
     setActiveExam(null);
-    
-    // 4. Refresh Data from Server (Background)
     loadExamsAndStatus(); 
   };
 
@@ -256,8 +240,6 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
     const s = seconds % 60;
     return `${m}:${s < 10 ? '0' : ''}${s}`;
   };
-
-  // --- RENDER EXAM ---
 
   if (activeExam) {
     const question = activeExam.questions[currentQuestionIdx];

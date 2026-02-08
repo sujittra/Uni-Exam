@@ -189,19 +189,19 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ user, onLogo
                let unanswered = 0;
                
                liveData.forEach(student => {
-                  const ans = student.answers[q.id];
+                  const studentAnswers = student.answers || {};
+                  const ans = studentAnswers[q.id];
                   if (ans === undefined || ans === null || ans === "") {
                     unanswered++;
                   } else {
                     let isCorrect = false;
                     if (q.type === QuestionType.MULTIPLE_CHOICE) {
-                      isCorrect = ans === q.correctOptionIndex;
+                      isCorrect = String(ans) === String(q.correctOptionIndex);
                     } else if (q.type === QuestionType.SHORT_ANSWER) {
                       isCorrect = q.acceptedAnswers?.some(a => a.toLowerCase() === String(ans).toLowerCase()) || false;
                     } else {
-                      // Java code we can't easily auto-grade in real-time view without compiled result
-                      // Assume submitted is "neutral" or skip correctness check for this view
-                      isCorrect = true; // Placeholder for visual if they submitted something
+                      // Java code - assume correct if length > 20 for this overview
+                      isCorrect = String(ans).length > 20; 
                     }
                     
                     if (isCorrect) correct++;
@@ -210,8 +210,8 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ user, onLogo
                });
 
                const total = liveData.length;
-               const pCorrect = (correct / total) * 100;
-               const pIncorrect = (incorrect / total) * 100;
+               const pCorrect = total > 0 ? (correct / total) * 100 : 0;
+               const pIncorrect = total > 0 ? (incorrect / total) * 100 : 0;
                
                return (
                  <div key={q.id} className="flex items-center gap-4">
@@ -475,7 +475,8 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ user, onLogo
                    {liveData.length === 0 && <p className="text-gray-500 col-span-3">Waiting for students to start...</p>}
                    {liveData.map(student => {
                      const exam = exams.find(e => e.id === monitoringExamId);
-                     const progressPercent = exam ? Math.round((Object.keys(student.answers).length / exam.questions.length) * 100) : 0;
+                     const studentAnswers = student.answers || {};
+                     const progressPercent = exam ? Math.round((Object.keys(studentAnswers).length / exam.questions.length) * 100) : 0;
                      return (
                        <div key={student.studentId} className="bg-white rounded-lg p-4 shadow border border-gray-200 flex flex-col gap-3">
                          <div className="flex justify-between">

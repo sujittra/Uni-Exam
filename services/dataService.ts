@@ -132,7 +132,7 @@ const mapProgress = (p: any, userName: string = ''): StudentProgress => ({
   studentName: userName, 
   examId: p.exam_id,
   currentQuestionIndex: p.current_question_index,
-  answers: p.answers || {},
+  answers: p.answers || {}, // Safety default
   score: p.score,
   status: p.status,
   startedAt: p.started_at ? new Date(p.started_at).getTime() : undefined,
@@ -149,7 +149,7 @@ export const loginTeacher = async (name: string, password: string): Promise<User
       .from('users')
       .select('*')
       .eq('role', 'TEACHER')
-      .ilike('name', name) // Case insensitive match for DB
+      .ilike('name', name) 
       .eq('password', password)
       .single();
     if (error || !data) return null;
@@ -360,7 +360,6 @@ export const updateExamStatus = async (examId: string, isActive: boolean): Promi
 
 export const getStudentProgress = async (studentId: string, examId: string): Promise<StudentProgress | null> => {
   if (supabase) {
-    // Manual Join for safety
     const { data: progress } = await supabase
       .from('student_progress')
       .select('*')
@@ -388,7 +387,7 @@ export const submitStudentProgress = async (progress: StudentProgress) => {
       student_id: progress.studentId,
       exam_id: progress.examId,
       current_question_index: progress.currentQuestionIndex,
-      answers: progress.answers,
+      answers: progress.answers || {}, // Force object
       status: progress.status,
       updated_at: new Date().toISOString()
     };
@@ -424,7 +423,7 @@ export const getLiveProgress = async (examId: string): Promise<StudentProgress[]
     
     if (error || !progressData) return [];
 
-    // 2. Get Student Names Manually (to avoid FK issues)
+    // 2. Get Student Names Manually
     const studentIds = progressData.map((p: any) => p.student_id);
     if (studentIds.length === 0) return [];
 
@@ -433,7 +432,6 @@ export const getLiveProgress = async (examId: string): Promise<StudentProgress[]
       .select('student_id, name')
       .in('student_id', studentIds);
 
-    // 3. Map Names
     const userMap = new Map(users?.map((u: any) => [u.student_id, u.name]) || []);
 
     return progressData.map((p: any) => mapProgress(p, userMap.get(p.student_id) || 'Unknown'));
@@ -483,13 +481,11 @@ export const getExamResults = async (examId: string): Promise<ExamResult[]> => {
 
   // --- 2. CALCULATE SCORES ---
   return progressList.map((p: any) => {
-    // Normalize progress object from DB or Mock
     const answers = p.answers || {};
     const status = p.status;
-    const submittedAt = p.updated_at || p.lastUpdated; // DB uses updated_at, Mock uses lastUpdated
+    const submittedAt = p.updated_at || p.lastUpdated; 
     
-    // Find User
-    const studentId = p.student_id || p.studentId; // DB uses snake_case, Mock uses camelCase
+    const studentId = p.student_id || p.studentId; 
     const user = users.find((u: any) => (u.student_id || u.studentId) === studentId);
 
     let totalScore = 0;
@@ -499,11 +495,10 @@ export const getExamResults = async (examId: string): Promise<ExamResult[]> => {
       maxScore += q.score;
       const ans = answers[q.id];
       
-      // Basic Grading Logic
       if (ans !== undefined && ans !== null && ans !== '') {
         if (q.type === QuestionType.MULTIPLE_CHOICE) {
-           // Ensure Type Match (DB might return string, app expects number index)
-           if (Number(ans) === Number(q.correctOptionIndex)) {
+           // Improved Type Coercion: DB might give "0" (string), App gives 0 (number)
+           if (String(ans) === String(q.correctOptionIndex)) {
              totalScore += q.score;
            }
         } else if (q.type === QuestionType.SHORT_ANSWER) {
@@ -511,9 +506,7 @@ export const getExamResults = async (examId: string): Promise<ExamResult[]> => {
            const isCorrect = q.acceptedAnswers?.some(a => a.toLowerCase() === textAns);
            if (isCorrect) totalScore += q.score;
         } else if (q.type === QuestionType.JAVA_CODE) {
-           // MOCK GRADING FOR JAVA: 
-           // If they submitted code with reasonable length, give full points for now.
-           // In production, this would read from a 'grading_results' table.
+           // Fallback grading: Length check > 20 chars
            if (typeof ans === 'string' && ans.length > 20) {
              totalScore += q.score;
            }
@@ -584,12 +577,9 @@ export const compileJavaCode = async (code: string, testCases: {input: string, o
               };
           }
 
-          // Output from stdout
           const actualOutput = result.run.stdout ? result.run.stdout.trim() : "";
-          
           const normalizedExpected = normalize(expected);
           const normalizedActual = normalize(actualOutput);
-          
           const passed = normalizedActual === normalizedExpected;
 
           return {
