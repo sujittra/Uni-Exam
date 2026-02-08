@@ -127,12 +127,25 @@ const mapQuestion = (q: any): Question => ({
   acceptedAnswers: q.accepted_answers
 });
 
+// Helper to safely parse JSONB that might come as string
+const safeParseJSON = (input: any) => {
+  if (typeof input === 'object' && input !== null) return input;
+  if (typeof input === 'string') {
+    try {
+      return JSON.parse(input);
+    } catch (e) {
+      return {};
+    }
+  }
+  return {};
+};
+
 const mapProgress = (p: any, userName: string = ''): StudentProgress => ({
   studentId: p.student_id,
   studentName: userName, 
   examId: p.exam_id,
   currentQuestionIndex: p.current_question_index,
-  answers: p.answers || {}, // Safety default
+  answers: safeParseJSON(p.answers), // Use Safe Parse
   score: p.score,
   status: p.status,
   startedAt: p.started_at ? new Date(p.started_at).getTime() : undefined,
@@ -517,7 +530,8 @@ export const getExamResults = async (examId: string): Promise<ExamResult[]> => {
 
   // --- 2. CALCULATE SCORES ---
   return progressList.map((p: any) => {
-    const answers = p.answers || {};
+    // Ensure answers is an object (Fix for Stringified JSONB)
+    const answers = safeParseJSON(p.answers); 
     const status = p.status;
     const submittedAt = p.updated_at || p.lastUpdated; 
     
