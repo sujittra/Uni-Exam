@@ -159,15 +159,12 @@ export const loginTeacher = async (name: string, password: string): Promise<User
   const mockUsers = getMockUsers();
   const mockPasswords = getMockPasswords();
   
-  // Find user (Case Insensitive)
   const user = mockUsers.find(u => 
     u.role === UserRole.TEACHER && 
     u.name.toLowerCase().trim() === name.toLowerCase().trim()
   );
 
   if (user) {
-      // Check password (Exact match) against the stored password for the *original* name key
-      // or try to find the key in passwords map that matches the user name
       const storedPassword = mockPasswords[user.name];
       if (storedPassword === password) return user;
   }
@@ -188,7 +185,6 @@ export const registerTeacher = async (name: string, password: string): Promise<U
   
   const mockUsers = getMockUsers();
   
-  // Check duplicate (Case Insensitive)
   const existing = mockUsers.find(u => 
       u.role === UserRole.TEACHER && 
       u.name.toLowerCase().trim() === name.toLowerCase().trim()
@@ -198,11 +194,9 @@ export const registerTeacher = async (name: string, password: string): Promise<U
   
   const newUser: User = { id: `t_${Date.now()}`, name: name.trim(), role: UserRole.TEACHER };
   
-  // 1. Save User
   const updatedUsers = [...mockUsers, newUser];
   saveMockData(STORAGE_KEYS.USERS, updatedUsers);
   
-  // 2. Save Password
   const mockPasswords = getMockPasswords();
   mockPasswords[newUser.name] = password;
   saveMockData(STORAGE_KEYS.PASSWORDS, mockPasswords);
@@ -366,14 +360,23 @@ export const updateExamStatus = async (examId: string, isActive: boolean): Promi
 
 export const getStudentProgress = async (studentId: string, examId: string): Promise<StudentProgress | null> => {
   if (supabase) {
-    const { data, error } = await supabase
+    // Manual Join for safety
+    const { data: progress } = await supabase
       .from('student_progress')
-      .select('*, users!student_progress_student_id_fkey(name)')
+      .select('*')
       .eq('student_id', studentId)
       .eq('exam_id', examId)
       .single();
-    if (error || !data) return null;
-    return mapProgress(data, data.users?.name);
+
+    if (!progress) return null;
+
+    const { data: user } = await supabase
+      .from('users')
+      .select('name')
+      .eq('student_id', studentId)
+      .single();
+
+    return mapProgress(progress, user?.name || studentId);
   }
   const mockProgressStore = getMockProgress();
   return mockProgressStore.find(p => p.studentId === studentId && p.examId === examId) || null;
@@ -413,13 +416,30 @@ export const submitStudentProgress = async (progress: StudentProgress) => {
 
 export const getLiveProgress = async (examId: string): Promise<StudentProgress[]> => {
   if (supabase) {
-    const { data, error } = await supabase
+    // 1. Get Progress
+    const { data: progressData, error } = await supabase
       .from('student_progress')
-      .select('*, users!student_progress_student_id_fkey(name)')
+      .select('*')
       .eq('exam_id', examId);
-    if (error || !data) return [];
-    return data.map((p: any) => mapProgress(p, p.users?.name));
+    
+    if (error || !progressData) return [];
+
+    // 2. Get Student Names Manually (to avoid FK issues)
+    const studentIds = progressData.map((p: any) => p.student_id);
+    if (studentIds.length === 0) return [];
+
+    const { data: users } = await supabase
+      .from('users')
+      .select('student_id, name')
+      .in('student_id', studentIds);
+
+    // 3. Map Names
+    const userMap = new Map(users?.map((u: any) => [u.student_id, u.name]) || []);
+
+    return progressData.map((p: any) => mapProgress(p, userMap.get(p.student_id) || 'Unknown'));
   }
+
+  // Fallback to Mock
   const mockProgressStore = getMockProgress();
   return mockProgressStore.filter(p => p.examId === examId);
 };
@@ -436,50 +456,65 @@ export interface ExamResult {
 
 export const getExamResults = async (examId: string): Promise<ExamResult[]> => {
   let exam: Exam | undefined;
-  let progressList: StudentProgress[] = [];
-  let userLookup: (id: string) => User | undefined;
+  let progressList: any[] = [];
+  let users: any[] = [];
 
+  // --- 1. FETCH DATA ---
   if (supabase) {
      const { data: eData } = await supabase.from('exams').select('*, questions(*)').eq('id', examId).single();
      if(eData) exam = mapExam(eData);
 
-     const { data: pData } = await supabase
-      .from('student_progress')
-      .select('*, users!student_progress_student_id_fkey(name, section)')
-      .eq('exam_id', examId);
-     
-     if(pData) {
-       progressList = pData.map((p: any) => mapProgress(p, p.users?.name));
-       userLookup = (sid) => {
-         const found = pData.find((p:any) => p.student_id === sid);
-         return found ? { ...found.users, id: 'temp', role: UserRole.STUDENT } : undefined;
-       }
+     const { data: pData } = await supabase.from('student_progress').select('*').eq('exam_id', examId);
+     progressList = pData || [];
+
+     if (progressList.length > 0) {
+        const sIds = progressList.map((p: any) => p.student_id);
+        const { data: uData } = await supabase.from('users').select('student_id, name, section').in('student_id', sIds);
+        users = uData || [];
      }
   } else {
      const mockExams = getMockExams();
-     const mockProgressStore = getMockProgress();
-     const mockUsers = getMockUsers();
-     
      exam = mockExams.find(e => e.id === examId);
-     progressList = mockProgressStore.filter(p => p.examId === examId);
-     userLookup = (sid) => mockUsers.find(u => u.studentId === sid);
+     progressList = getMockProgress().filter(p => p.examId === examId);
+     users = getMockUsers();
   }
 
   if (!exam) return [];
 
-  return progressList.map(p => {
-    const student = userLookup(p.studentId);
+  // --- 2. CALCULATE SCORES ---
+  return progressList.map((p: any) => {
+    // Normalize progress object from DB or Mock
+    const answers = p.answers || {};
+    const status = p.status;
+    const submittedAt = p.updated_at || p.lastUpdated; // DB uses updated_at, Mock uses lastUpdated
+    
+    // Find User
+    const studentId = p.student_id || p.studentId; // DB uses snake_case, Mock uses camelCase
+    const user = users.find((u: any) => (u.student_id || u.studentId) === studentId);
+
     let totalScore = 0;
     let maxScore = 0;
 
     exam!.questions.forEach(q => {
       maxScore += q.score;
-      const ans = p.answers[q.id];
+      const ans = answers[q.id];
+      
+      // Basic Grading Logic
       if (ans !== undefined && ans !== null && ans !== '') {
         if (q.type === QuestionType.MULTIPLE_CHOICE) {
-           if (ans === q.correctOptionIndex) totalScore += q.score;
+           // Ensure Type Match (DB might return string, app expects number index)
+           if (Number(ans) === Number(q.correctOptionIndex)) {
+             totalScore += q.score;
+           }
         } else if (q.type === QuestionType.SHORT_ANSWER) {
-           if (q.acceptedAnswers?.some(a => a.toLowerCase() === String(ans).toLowerCase())) {
+           const textAns = String(ans).trim().toLowerCase();
+           const isCorrect = q.acceptedAnswers?.some(a => a.toLowerCase() === textAns);
+           if (isCorrect) totalScore += q.score;
+        } else if (q.type === QuestionType.JAVA_CODE) {
+           // MOCK GRADING FOR JAVA: 
+           // If they submitted code with reasonable length, give full points for now.
+           // In production, this would read from a 'grading_results' table.
+           if (typeof ans === 'string' && ans.length > 20) {
              totalScore += q.score;
            }
         }
@@ -487,13 +522,13 @@ export const getExamResults = async (examId: string): Promise<ExamResult[]> => {
     });
 
     return {
-      studentId: p.studentId,
-      name: p.studentName,
-      section: student?.section || 'N/A',
+      studentId: studentId,
+      name: user?.name || 'Unknown',
+      section: user?.section || 'N/A',
       totalScore,
       maxScore,
-      status: p.status,
-      submittedAt: new Date(p.lastUpdated).toLocaleString()
+      status: status,
+      submittedAt: submittedAt ? new Date(submittedAt).toLocaleString() : 'N/A'
     };
   });
 };
