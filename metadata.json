@@ -1,0 +1,5 @@
+{
+  "name": "UniExam Pro",
+  "description": "A minimalist, purple-themed university examination system with Java code grading support and real-time student monitoring.",
+  "requestFramePermissions": []
+}
