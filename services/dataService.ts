@@ -411,12 +411,8 @@ export const compileJavaCode = async (code: string, testCases: {input: string, o
   let finalOutputDetails = "";
   let allPassed = true;
 
-  // We must run test cases sequentially or in parallel against the remote server
-  // Piston is stateless, so we send the code every time.
-  
-  // Wrap code in Main class if not present to help the compiler
-  // (Piston handles files well, but ensuring a class structure helps beginners)
-  // However, usually Piston runs whatever file name is given. We'll default to 'Main.java'.
+  // Normalization Helper: Collapses newlines and multiple spaces into single spaces
+  const normalize = (str: string) => str.replace(/\s+/g, ' ').trim();
 
   const runTestCase = async (input: string, expected: string, index: number) => {
       try {
@@ -425,7 +421,7 @@ export const compileJavaCode = async (code: string, testCases: {input: string, o
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({
                   language: "java",
-                  version: "15.0.2", // Or latest available
+                  version: "15.0.2", 
                   files: [
                       {
                           name: "Main.java",
@@ -456,15 +452,17 @@ export const compileJavaCode = async (code: string, testCases: {input: string, o
 
           // Output from stdout
           const actualOutput = result.run.stdout ? result.run.stdout.trim() : "";
-          const normalizedExpected = expected.replace(/\r\n/g, '\n').trim();
-          const normalizedActual = actualOutput.replace(/\r\n/g, '\n').trim();
-
+          
+          // Use whitespace-insensitive comparison
+          const normalizedExpected = normalize(expected);
+          const normalizedActual = normalize(actualOutput);
+          
           const passed = normalizedActual === normalizedExpected;
 
           return {
               success: true,
               passed: passed,
-              details: `Test Case ${index + 1}: Input [${input}] -> Expected [${normalizedExpected}] -> Actual [${normalizedActual}] (${passed ? 'PASS' : 'FAIL'})`
+              details: `Test Case ${index + 1}: Input [${input}] \n   -> Expected [${normalizedExpected}] \n   -> Actual   [${normalizedActual}] (${passed ? 'PASS' : 'FAIL'})`
           };
 
       } catch (error: any) {
