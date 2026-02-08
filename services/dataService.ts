@@ -140,6 +140,15 @@ const safeParseJSON = (input: any) => {
   return {};
 };
 
+// HELPER: Normalize Answer Text for Flexible Grading
+const normalizeAnswerText = (text: any) => {
+  if (!text) return '';
+  return String(text)
+    .toLowerCase()
+    .replace(/[\n\r]+/g, ',') // Convert newlines to commas (e.g. pop\npush -> pop,push)
+    .replace(/\s+/g, '');     // Remove all whitespace
+};
+
 const mapProgress = (p: any, userName: string = ''): StudentProgress => ({
   studentId: p.student_id,
   studentName: userName, 
@@ -552,8 +561,9 @@ export const getExamResults = async (examId: string): Promise<ExamResult[]> => {
              totalScore += q.score;
            }
         } else if (q.type === QuestionType.SHORT_ANSWER) {
-           const textAns = String(ans).trim().toLowerCase();
-           const isCorrect = q.acceptedAnswers?.some(a => a.toLowerCase() === textAns);
+           // FLEXIBLE GRADING for Short Answer
+           const studentAns = normalizeAnswerText(ans);
+           const isCorrect = q.acceptedAnswers?.some(a => normalizeAnswerText(a) === studentAns);
            if (isCorrect) totalScore += q.score;
         } else if (q.type === QuestionType.JAVA_CODE) {
            // Fallback grading: Length check > 20 chars

@@ -12,6 +12,15 @@ interface TeacherDashboardProps {
 type SortOption = 'ID' | 'NAME' | 'SECTION' | 'STATUS' | 'PROGRESS';
 type SortDirection = 'ASC' | 'DESC';
 
+// HELPER: Normalize Answer Text (Duplicated from dataService for client-side rendering)
+const normalizeAnswerText = (text: any) => {
+    if (!text) return '';
+    return String(text)
+      .toLowerCase()
+      .replace(/[\n\r]+/g, ',') // Convert newlines to commas
+      .replace(/\s+/g, '');     // Remove all whitespace
+  };
+
 export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ user, onLogout }) => {
   const [activeTab, setActiveTab] = useState<'EXAMS' | 'STUDENTS' | 'MONITOR'>('EXAMS');
   const [exams, setExams] = useState<Exam[]>([]);
@@ -289,7 +298,7 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ user, onLogo
     const currentExam = exams.find(e => e.id === monitoringExamId);
     if (!currentExam) return null;
 
-    // Filter only those who have submitted ANY answers in liveData
+    // Filter only those who have submitted ANY answers in liveData (Active or Completed)
     const activeStudents = liveData.filter(p => p.answers && Object.keys(p.answers).length > 0);
     const totalActive = activeStudents.length;
 
@@ -308,19 +317,25 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ user, onLogo
               
               activeStudents.forEach(student => {
                  const ans = student.answers[q.id];
+                 let isCorrect = false;
+
+                 // Only check correctness if answer exists
                  if (ans !== undefined && ans !== null && ans !== "") {
-                   let isCorrect = false;
                    if (q.type === QuestionType.MULTIPLE_CHOICE) {
                      isCorrect = String(ans) === String(q.correctOptionIndex);
                    } else if (q.type === QuestionType.SHORT_ANSWER) {
-                     isCorrect = q.acceptedAnswers?.some(a => a.toLowerCase() === String(ans).toLowerCase()) || false;
+                     // USE FLEXIBLE GRADING (Same as dataService)
+                     const studentAns = normalizeAnswerText(ans);
+                     isCorrect = q.acceptedAnswers?.some(a => normalizeAnswerText(a) === studentAns) || false;
                    } else {
                      isCorrect = String(ans).length > 20; // Rough check for code
                    }
-                   
-                   if (isCorrect) correct++;
-                   else incorrect++;
                  }
+                 
+                 // If Correct -> Increment Correct
+                 // If Wrong OR Answer is Missing/Empty -> Increment Incorrect (Ensures bar is always full width)
+                 if (isCorrect) correct++;
+                 else incorrect++;
               });
 
               const pCorrect = (correct / totalActive) * 100;
