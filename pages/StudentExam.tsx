@@ -89,6 +89,12 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
   };
 
   const initExamSession = async (exam: Exam) => {
+    // 0. Immediate check against current UI state
+    if (examStatuses[exam.id]?.status === 'COMPLETED') {
+        alert("You have already completed this exam.");
+        return;
+    }
+
     // 1. Fetch Latest Data (Priority: LocalStorage > DB) to handle offline/disconnect cases
     const localKey = getStorageKey(user.studentId!, exam.id);
     const localStr = localStorage.getItem(localKey);
@@ -109,6 +115,7 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
     // Safety Check: If already completed, prevent restart
     if (finalData && finalData.status === 'COMPLETED') {
         alert("You have already completed this exam.");
+        // Force refresh statuses to update UI
         await loadExamsAndStatus();
         return;
     }
@@ -215,17 +222,32 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
   };
 
   const finishExam = async (force = false) => {
+    if (!activeExam) return;
+
     if (!force && !window.confirm("Are you sure you want to submit? You cannot undo this action.")) {
       return;
     }
     
-    // Set UI to loading state if needed, or just await
-    // Final Sync - Await to ensure DB is updated before we return to Lobby
-    await syncProgress(activeExam!.id, currentQuestionIdx, answers, 'COMPLETED', examStartTime);
+    // 1. Final Sync (Await ensures DB/Local is updated)
+    await syncProgress(activeExam.id, currentQuestionIdx, answers, 'COMPLETED', examStartTime);
     
+    // 2. Optimistic Update: Update UI state immediately before fetch
+    setExamStatuses(prev => ({
+      ...prev,
+      [activeExam.id]: {
+        ...prev[activeExam.id],
+        status: 'COMPLETED',
+        lastUpdated: Date.now()
+      }
+    }));
+
     if(!force) alert('Exam Submitted Successfully!');
+    
+    // 3. Close Exam View
     setActiveExam(null);
-    loadExamsAndStatus(); // Refresh list to update button state
+    
+    // 4. Refresh Data from Server (Background)
+    loadExamsAndStatus(); 
   };
 
   const formatTime = (seconds: number) => {
