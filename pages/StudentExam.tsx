@@ -15,6 +15,7 @@ const getStorageKey = (studentId: string, examId: string) => `uniexam_prog_${stu
 export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
   const [availableExams, setAvailableExams] = useState<Exam[]>([]);
   const [examStatuses, setExamStatuses] = useState<Record<string, StudentProgress>>({});
+  const [syncingStatus, setSyncingStatus] = useState<string | null>(null);
   
   const [activeExam, setActiveExam] = useState<Exam | null>(null);
   const [currentQuestionIdx, setCurrentQuestionIdx] = useState(0);
@@ -56,7 +57,7 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
           setTimeLeft(remaining);
           // Sync progress to Server every 30 seconds using REF to avoid stale state
           if (remaining % 30 === 0) {
-             syncProgress(activeExam.id, currentQuestionIdx, answersRef.current, 'IN_PROGRESS', examStartTime);
+             syncProgress(activeExam.id, currentQuestionIdx, answersRef.current, 'IN_PROGRESS', examStartTime, true);
           }
         }
       }, 1000);
@@ -70,10 +71,21 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
     
     const statuses: Record<string, StudentProgress> = {};
     for (const exam of exams) {
-       const dbProg = await getStudentProgress(user.studentId!, exam.id);
+       let dbProg = await getStudentProgress(user.studentId!, exam.id);
        const localKey = getStorageKey(user.studentId!, exam.id);
        const localStr = localStorage.getItem(localKey);
        const localProg = localStr ? JSON.parse(localStr) : null;
+
+       // AUTO-SYNC FIX: If local says completed but DB is missing or old, push it.
+       if (localProg?.status === 'COMPLETED' && (!dbProg || dbProg.status !== 'COMPLETED')) {
+          console.log(`Auto-syncing completed exam: ${exam.id}`);
+          setSyncingStatus(`Syncing exam data: ${exam.title}...`);
+          const result = await submitStudentProgress(localProg);
+          if (result.success) {
+             dbProg = await getStudentProgress(user.studentId!, exam.id);
+          }
+          setSyncingStatus(null);
+       }
 
        let finalProg = dbProg;
        if (localProg && dbProg) {
@@ -135,7 +147,7 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
     setShowTOS(null);
   };
 
-  const syncProgress = async (examId: string, idx: number, currAnswers: any, status: 'IN_PROGRESS' | 'COMPLETED', startedAt: number) => {
+  const syncProgress = async (examId: string, idx: number, currAnswers: any, status: 'IN_PROGRESS' | 'COMPLETED', startedAt: number, silent = false) => {
     // Double check we aren't sending empty answers if we have them in ref
     const finalAnswers = Object.keys(currAnswers).length > 0 ? currAnswers : answersRef.current;
     
@@ -152,7 +164,10 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
     };
     
     saveToLocal(examId, idx, finalAnswers, startedAt, status);
-    await submitStudentProgress(progress); 
+    const result = await submitStudentProgress(progress); 
+    if (!result.success && !silent) {
+        alert("Warning: Failed to save progress to server. Check your connection.");
+    }
   };
 
   const saveToLocal = (examId: string, idx: number, currAnswers: any, startedAt: number, status: string) => {
@@ -196,7 +211,7 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
       
       // Use Ref to ensure we send the latest answers
       saveToLocal(activeExam!.id, nextIdx, answersRef.current, examStartTime, 'IN_PROGRESS');
-      syncProgress(activeExam!.id, nextIdx, answersRef.current, 'IN_PROGRESS', examStartTime);
+      syncProgress(activeExam!.id, nextIdx, answersRef.current, 'IN_PROGRESS', examStartTime, true);
       
       setCodeOutput(''); 
     }
@@ -217,8 +232,10 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
       return;
     }
     
+    setSyncingStatus("Submitting...");
     // Use Ref to ensure absolute latest state is sent
     await syncProgress(activeExam.id, currentQuestionIdx, answersRef.current, 'COMPLETED', examStartTime);
+    setSyncingStatus(null);
     
     setExamStatuses(prev => ({
       ...prev,
@@ -262,7 +279,9 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
                   {formatTime(timeLeft)}
                 </span>
              </div>
-             <Button variant="danger" size="sm" onClick={() => finishExam(false)}>Submit Exam</Button>
+             <Button variant="danger" size="sm" onClick={() => finishExam(false)} disabled={!!syncingStatus}>
+               {syncingStatus ? 'Submitting...' : 'Submit Exam'}
+             </Button>
           </div>
         </header>
 
@@ -385,7 +404,9 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
             </Button>
             
             {isLast ? (
-                <Button variant="danger" onClick={() => finishExam(false)}>Finish & Submit</Button>
+                <Button variant="danger" onClick={() => finishExam(false)} disabled={!!syncingStatus}>
+                  {syncingStatus ? 'Submitting...' : 'Finish & Submit'}
+                </Button>
             ) : (
                 <Button onClick={nextQuestion}>Next Question &rarr;</Button>
             )}
@@ -424,6 +445,12 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
          <div className="container mx-auto flex justify-between items-center">
             <div className="font-bold text-purple-800 text-lg">UniExam Pro <span className="text-gray-400 font-normal ml-2">| Student Portal</span></div>
             <div className="flex items-center gap-4">
+               {syncingStatus && (
+                 <div className="flex items-center gap-2 text-xs text-purple-600 bg-purple-100 px-3 py-1 rounded-full animate-pulse">
+                   <div className="w-2 h-2 bg-purple-600 rounded-full"></div>
+                   {syncingStatus}
+                 </div>
+               )}
                <div className="text-right">
                  <p className="text-sm font-bold text-gray-800">{user.name}</p>
                  <p className="text-xs text-gray-500">ID: {user.studentId}</p>
@@ -458,7 +485,28 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
                     </div>
                     
                     {isCompleted ? (
-                       <Button className="w-full" disabled variant="secondary">Exam Completed</Button>
+                       <div className="flex gap-2">
+                         <Button className="w-full" disabled variant="secondary">Exam Completed</Button>
+                         {/* Manual Sync Button if user suspects issue */}
+                         <button 
+                            className="text-xs text-purple-500 underline" 
+                            title="Click if results are missing"
+                            onClick={async () => {
+                               if(window.confirm("Resend results to server?")) {
+                                  const localKey = getStorageKey(user.studentId!, exam.id);
+                                  const localData = JSON.parse(localStorage.getItem(localKey) || '{}');
+                                  if (localData) {
+                                      setSyncingStatus("Resending...");
+                                      await submitStudentProgress(localData);
+                                      setSyncingStatus(null);
+                                      alert("Results resent.");
+                                  }
+                               }
+                            }}
+                         >
+                           Resync
+                         </button>
+                       </div>
                     ) : (
                        <Button 
                          className="w-full" 

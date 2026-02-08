@@ -381,7 +381,7 @@ export const getStudentProgress = async (studentId: string, examId: string): Pro
   return mockProgressStore.find(p => p.studentId === studentId && p.examId === examId) || null;
 }
 
-export const submitStudentProgress = async (progress: StudentProgress) => {
+export const submitStudentProgress = async (progress: StudentProgress): Promise<{success: boolean, error?: string}> => {
   if (supabase) {
     const payload: any = {
       student_id: progress.studentId,
@@ -396,8 +396,11 @@ export const submitStudentProgress = async (progress: StudentProgress) => {
     }
 
     const { error } = await supabase.from('student_progress').upsert(payload, { onConflict: 'student_id, exam_id' });
-    if (error) console.error("Progress Sync Error:", error);
-    return;
+    if (error) {
+       console.error("Progress Sync Error:", error);
+       return { success: false, error: error.message };
+    }
+    return { success: true };
   }
 
   const mockProgressStore = getMockProgress();
@@ -411,6 +414,7 @@ export const submitStudentProgress = async (progress: StudentProgress) => {
     updatedStore = [...mockProgressStore, { ...progress, lastUpdated: Date.now() }];
   }
   saveMockData(STORAGE_KEYS.PROGRESS, updatedStore);
+  return { success: true };
 };
 
 export const getLiveProgress = async (examId: string): Promise<StudentProgress[]> => {
