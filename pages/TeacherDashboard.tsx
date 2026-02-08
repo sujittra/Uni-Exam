@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { User, Exam, Question, QuestionType, StudentProgress, TestCase } from '../types';
-import { saveExam, deleteExam, getExamsForTeacher, getLiveProgress, importStudents, updateExamStatus, getExamResults } from '../services/dataService';
+import { saveExam, deleteExam, getExamsForTeacher, getLiveProgress, importStudents, updateExamStatus, getExamResults, uploadExamImage } from '../services/dataService';
 import { Card } from '../components/Card';
 import { Button } from '../components/Button';
 
@@ -166,6 +166,18 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ user, onLogo
     });
   };
 
+  const handleImageUpload = async (qId: string, file: File | null) => {
+     if(!file) return;
+     // Basic loading indicator could be implemented here, 
+     // but for now we rely on the browser's upload speed.
+     try {
+       const url = await uploadExamImage(file);
+       updateQuestion(qId, { imageUrl: url });
+     } catch (err: any) {
+       alert("Upload failed: " + err.message + "\nMake sure you created 'exam-images' bucket in Supabase.");
+     }
+  };
+
   // --- RENDER ---
 
   // If Editing, show full screen editor
@@ -246,12 +258,35 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ user, onLogo
                                 onChange={(e) => updateQuestion(q.id, { text: e.target.value })}
                                 placeholder="Enter question text (multiline supported)..."
                               />
-                              <input 
-                                className="w-full p-2 border border-gray-300 rounded text-sm"
-                                value={q.imageUrl || ''}
-                                onChange={(e) => updateQuestion(q.id, { imageUrl: e.target.value })}
-                                placeholder="Image URL (optional)... https://..."
-                              />
+                              
+                              {/* Image Upload Area */}
+                              <div className="flex items-center gap-4 bg-gray-50 p-3 rounded border border-gray-200">
+                                 {q.imageUrl ? (
+                                    <div className="flex items-center gap-4">
+                                       <img src={q.imageUrl} alt="Question" className="h-16 w-16 object-cover rounded border" />
+                                       <div className="flex flex-col gap-1">
+                                          <a href={q.imageUrl} target="_blank" rel="noreferrer" className="text-xs text-blue-600 hover:underline break-all max-w-[200px] truncate">{q.imageUrl}</a>
+                                          <button 
+                                            onClick={() => updateQuestion(q.id, { imageUrl: '' })}
+                                            className="text-xs text-red-500 font-bold hover:text-red-700 text-left"
+                                          >
+                                            Remove Image
+                                          </button>
+                                       </div>
+                                    </div>
+                                 ) : (
+                                    <div className="flex-1">
+                                       <label className="text-xs font-bold text-gray-500 uppercase block mb-1">Add Question Image</label>
+                                       <input 
+                                         type="file" 
+                                         accept="image/*"
+                                         className="block w-full text-sm text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-purple-50 file:text-purple-700 hover:file:bg-purple-100"
+                                         onChange={(e) => handleImageUpload(q.id, e.target.files?.[0] || null)}
+                                       />
+                                    </div>
+                                 )}
+                              </div>
+
                            </div>
                            <div className="w-24">
                               <input 

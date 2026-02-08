@@ -202,6 +202,35 @@ export const importStudents = async (studentData: {id: string, name: string, sec
 // EXAM MANAGEMENT
 // ==========================================
 
+export const uploadExamImage = async (file: File): Promise<string> => {
+  if (supabase) {
+    // 1. Create a unique file name
+    const fileExt = file.name.split('.').pop();
+    const fileName = `${Date.now()}_${Math.random().toString(36).substr(2, 9)}.${fileExt}`;
+    const filePath = `${fileName}`;
+
+    // 2. Upload to 'exam-images' bucket
+    const { error: uploadError } = await supabase.storage
+      .from('exam-images')
+      .upload(filePath, file);
+
+    if (uploadError) {
+      throw new Error(`Upload failed: ${uploadError.message}`);
+    }
+
+    // 3. Get Public URL
+    const { data } = supabase.storage
+      .from('exam-images')
+      .getPublicUrl(filePath);
+
+    return data.publicUrl;
+  }
+
+  // Mock Fallback: Create a blob URL (Valid only for current session)
+  console.warn("Using Mock Storage (Blob URL). Will not persist.");
+  return URL.createObjectURL(file);
+};
+
 export const getExamsForStudent = async (student: User): Promise<Exam[]> => {
   if (supabase) {
     const { data, error } = await supabase
