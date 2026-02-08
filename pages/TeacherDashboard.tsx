@@ -27,13 +27,8 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ user, onLogo
 
   useEffect(() => {
     loadExams();
+    loadStudents(); // Always load students to ensure Roster/Monitor works
   }, []);
-
-  useEffect(() => {
-    if (activeTab === 'STUDENTS') {
-      loadStudents();
-    }
-  }, [activeTab]);
 
   // Polling for monitoring
   useEffect(() => {
@@ -245,6 +240,37 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ user, onLogo
          </div>
        </Card>
      );
+  };
+
+  // --- MERGE ROSTER AND LIVE DATA ---
+  const getMergedMonitorData = () => {
+    if (!monitoringExamId) return [];
+    const exam = exams.find(e => e.id === monitoringExamId);
+    if (!exam) return [];
+
+    // Filter students by assigned sections
+    const eligibleStudents = students.filter(s => 
+      exam.assignedSections.length === 0 || // No sections assigned = all valid
+      exam.assignedSections.includes(s.section || '')
+    );
+
+    // Merge with Live Data
+    return eligibleStudents.map(student => {
+      const progress = liveData.find(p => p.studentId === student.studentId);
+      return {
+        user: student,
+        progress: progress || {
+          studentId: student.studentId!,
+          studentName: student.name,
+          examId: exam.id,
+          currentQuestionIndex: -1,
+          answers: {},
+          score: 0,
+          status: 'IDLE' as const,
+          lastUpdated: 0
+        }
+      };
+    });
   };
 
   // --- RENDER ---
@@ -508,42 +534,54 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ user, onLogo
               <div className="text-center py-20 text-gray-400 border-2 border-dashed border-gray-300 rounded-xl">Select an exam to view real-time student activity.</div>
             ) : (
               <div>
-                 {/* New Overall Stats Section */}
+                 {/* Overall Stats Section */}
                  {renderQuestionStats()}
 
                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                   {liveData.length === 0 && <p className="text-gray-500 col-span-3">Waiting for students to start...</p>}
-                   {liveData.map(student => {
+                   {getMergedMonitorData().length === 0 && <p className="text-gray-500 col-span-3 text-center">No students assigned to this exam's sections.</p>}
+                   
+                   {getMergedMonitorData().map(({ user, progress }) => {
                      const exam = exams.find(e => e.id === monitoringExamId);
-                     const studentAnswers = student.answers || {};
+                     const studentAnswers = progress.answers || {};
                      const answerCount = Object.keys(studentAnswers).length;
                      
-                     // Improved Progress Logic: If answers are missing but index > 0, use index
+                     // Improved Progress Logic: 
+                     // 1. If Completed, force 100% (Visual fix for legacy data issues)
+                     // 2. Else calculate based on answers or index
                      let progressPercent = 0;
-                     if (exam) {
-                        const count = Math.max(answerCount, student.currentQuestionIndex);
+                     if (progress.status === 'COMPLETED') {
+                        progressPercent = 100;
+                     } else if (exam) {
+                        const count = Math.max(answerCount, progress.currentQuestionIndex);
                         progressPercent = Math.round((count / exam.questions.length) * 100);
-                        // Cap at 100
                         if(progressPercent > 100) progressPercent = 100;
                      }
 
+                     const isIdle = progress.status === 'IDLE';
+
                      return (
-                       <div key={student.studentId} className="bg-white rounded-lg p-4 shadow border border-gray-200 flex flex-col gap-3">
+                       <div key={user.studentId} className={`rounded-lg p-4 shadow border flex flex-col gap-3 transition-colors ${isIdle ? 'bg-gray-50 border-gray-200 opacity-75' : 'bg-white border-gray-200'}`}>
                          <div className="flex justify-between">
                            <div>
-                             <h4 className="font-bold text-gray-900">{student.studentName}</h4>
-                             <span className="text-xs text-gray-500">ID: {student.studentId}</span>
+                             <h4 className="font-bold text-gray-900">{user.name}</h4>
+                             <span className="text-xs text-gray-500">ID: {user.studentId}</span>
                            </div>
-                           <span className={`px-2 py-1 text-xs rounded-full h-fit ${student.status === 'COMPLETED' ? 'bg-green-100 text-green-800' : 'bg-blue-100 text-blue-800'}`}>{student.status}</span>
+                           <span className={`px-2 py-1 text-xs rounded-full h-fit font-semibold 
+                             ${progress.status === 'COMPLETED' ? 'bg-green-100 text-green-800' : 
+                               progress.status === 'IN_PROGRESS' ? 'bg-blue-100 text-blue-800' : 'bg-gray-200 text-gray-600'}`}>
+                             {progress.status === 'IDLE' ? 'NOT STARTED' : progress.status}
+                           </span>
                          </div>
                          <div className="w-full bg-gray-200 rounded-full h-2.5">
-                           <div className="bg-purple-600 h-2.5 rounded-full transition-all duration-500" style={{ width: `${progressPercent}%` }}></div>
+                           <div className={`h-2.5 rounded-full transition-all duration-500 ${progress.status === 'COMPLETED' ? 'bg-green-500' : 'bg-purple-600'}`} style={{ width: `${progressPercent}%` }}></div>
                          </div>
                          <div className="flex justify-between text-xs text-gray-500">
                            <span>Progress: {progressPercent}%</span>
-                           <span>Current Q: {student.currentQuestionIndex + 1}</span>
+                           <span>{isIdle ? '-' : `Current Q: ${progress.currentQuestionIndex + 1}`}</span>
                          </div>
-                         <div className="text-xs text-right text-gray-400 mt-2">Last Active: {new Date(student.lastUpdated).toLocaleTimeString()}</div>
+                         <div className="text-xs text-right text-gray-400 mt-2">
+                           {isIdle ? 'Waiting...' : `Last Active: ${new Date(progress.lastUpdated).toLocaleTimeString()}`}
+                         </div>
                        </div>
                      );
                    })}
