@@ -9,6 +9,9 @@ interface StudentExamProps {
   onLogout: () => void;
 }
 
+// Helper for LocalStorage Keys
+const getStorageKey = (studentId: string, examId: string) => `uniexam_prog_${studentId}_${examId}`;
+
 export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
   const [availableExams, setAvailableExams] = useState<Exam[]>([]);
   const [examStatuses, setExamStatuses] = useState<Record<string, StudentProgress>>({});
@@ -30,10 +33,12 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
     loadExamsAndStatus();
   }, []);
 
+  // Timer & Auto-Sync
   useEffect(() => {
     if (activeExam && examStartTime > 0) {
       const timer = setInterval(() => {
-        // Calculate remaining based on wall-clock time
+        // Calculate remaining based on wall-clock time (Start Time vs Now)
+        // This ensures time keeps running even if browser is closed.
         const now = Date.now();
         const elapsedSeconds = Math.floor((now - examStartTime) / 1000);
         const durationSeconds = activeExam.durationMinutes * 60;
@@ -45,7 +50,7 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
           clearInterval(timer);
         } else {
           setTimeLeft(remaining);
-          // Sync progress every 30 seconds
+          // Sync progress to Server every 30 seconds
           if (remaining % 30 === 0) {
              syncProgress(activeExam.id, currentQuestionIdx, answers, 'IN_PROGRESS', examStartTime);
           }
@@ -53,37 +58,74 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
       }, 1000);
       return () => clearInterval(timer);
     }
-  }, [activeExam, examStartTime, answers]);
+  }, [activeExam, examStartTime, answers, currentQuestionIdx]);
 
   const loadExamsAndStatus = async () => {
     const exams = await getExamsForStudent(user);
     setAvailableExams(exams);
     
-    // Check status for each exam (for Resume/Completed buttons)
+    // Check status for each exam (Merge DB and LocalStorage to show correct status in Lobby)
     const statuses: Record<string, StudentProgress> = {};
     for (const exam of exams) {
-       const prog = await getStudentProgress(user.studentId!, exam.id);
-       if (prog) statuses[exam.id] = prog;
+       // 1. Get DB Status
+       const dbProg = await getStudentProgress(user.studentId!, exam.id);
+       
+       // 2. Get Local Status
+       const localKey = getStorageKey(user.studentId!, exam.id);
+       const localStr = localStorage.getItem(localKey);
+       const localProg = localStr ? JSON.parse(localStr) : null;
+
+       // 3. Use the latest one
+       let finalProg = dbProg;
+       if (localProg && dbProg) {
+          if (localProg.lastUpdated > dbProg.lastUpdated) finalProg = localProg;
+       } else if (localProg) {
+          finalProg = localProg;
+       }
+
+       if (finalProg) statuses[exam.id] = finalProg;
     }
     setExamStatuses(statuses);
   };
 
   const initExamSession = async (exam: Exam) => {
-    // Check if we have progress
-    const existingProgress = examStatuses[exam.id];
+    // 1. Fetch Latest Data (Priority: LocalStorage > DB) to handle offline/disconnect cases
+    const localKey = getStorageKey(user.studentId!, exam.id);
+    const localStr = localStorage.getItem(localKey);
+    const localData = localStr ? JSON.parse(localStr) : null;
     
+    // We already have DB status from loadExamsAndStatus, but let's refresh to be safe
+    const dbData = await getStudentProgress(user.studentId!, exam.id);
+    
+    let finalData = null;
+    
+    // Compare timestamps to find the most recent state
+    if (localData && dbData) {
+        finalData = (localData.lastUpdated > dbData.lastUpdated) ? localData : dbData;
+        console.log("Syncing: Using " + (localData.lastUpdated > dbData.lastUpdated ? "Local Storage" : "Database"));
+    } else {
+        finalData = localData || dbData;
+    }
+
     let startTime = Date.now();
     let startIdx = 0;
     let savedAnswers = {};
 
-    if (existingProgress && existingProgress.status === 'IN_PROGRESS' && existingProgress.startedAt) {
-      startTime = existingProgress.startedAt;
-      startIdx = existingProgress.currentQuestionIndex;
-      savedAnswers = existingProgress.answers;
-      console.log("Resuming exam from", new Date(startTime).toLocaleTimeString());
+    if (finalData && finalData.status === 'IN_PROGRESS' && finalData.startedAt) {
+      // RESUME SESSION
+      startTime = finalData.startedAt;
+      startIdx = finalData.currentQuestionIndex || 0;
+      savedAnswers = finalData.answers || {};
+      
+      // If we resumed from LocalStorage (because it was newer), we should try to sync to DB immediately
+      if (finalData === localData) {
+          syncProgress(exam.id, startIdx, savedAnswers, 'IN_PROGRESS', startTime);
+      }
     } else {
-      // First time start
+      // START NEW SESSION
       await syncProgress(exam.id, 0, {}, 'IN_PROGRESS', startTime);
+      // Init Local Storage immediately
+      saveToLocal(exam.id, 0, {}, startTime, 'IN_PROGRESS');
     }
 
     setExamStartTime(startTime);
@@ -105,12 +147,38 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
       startedAt: startedAt,
       lastUpdated: Date.now()
     };
-    submitStudentProgress(progress);
+    
+    // 1. Send to Server
+    submitStudentProgress(progress); 
+    
+    // 2. Update LocalStorage (Redundant but ensures consistency)
+    if (status === 'COMPLETED') {
+        localStorage.removeItem(getStorageKey(user.studentId!, examId));
+    } else {
+        saveToLocal(examId, idx, currAnswers, startedAt, status);
+    }
+  };
+
+  const saveToLocal = (examId: string, idx: number, currAnswers: any, startedAt: number, status: string) => {
+      const key = getStorageKey(user.studentId!, examId);
+      const data = {
+          studentId: user.studentId!,
+          examId,
+          currentQuestionIndex: idx,
+          answers: currAnswers,
+          status,
+          startedAt,
+          lastUpdated: Date.now()
+      };
+      localStorage.setItem(key, JSON.stringify(data));
   };
 
   const handleAnswer = (val: any) => {
     const newAnswers = { ...answers, [activeExam!.questions[currentQuestionIdx].id]: val };
     setAnswers(newAnswers);
+    
+    // Save to LocalStorage immediately on every input
+    saveToLocal(activeExam!.id, currentQuestionIdx, newAnswers, examStartTime, 'IN_PROGRESS');
   };
 
   const runCode = async (code: string, question: Question) => {
@@ -125,7 +193,11 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
     if (currentQuestionIdx < activeExam!.questions.length - 1) {
       const nextIdx = currentQuestionIdx + 1;
       setCurrentQuestionIdx(nextIdx);
+      
+      // Save position to LocalStorage & Server
+      saveToLocal(activeExam!.id, nextIdx, answers, examStartTime, 'IN_PROGRESS');
       syncProgress(activeExam!.id, nextIdx, answers, 'IN_PROGRESS', examStartTime);
+      
       setCodeOutput(''); 
     }
   };
@@ -134,8 +206,9 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
     if (currentQuestionIdx > 0) {
       const prevIdx = currentQuestionIdx - 1;
       setCurrentQuestionIdx(prevIdx);
-      // Optional: sync on back? Maybe not strictly necessary to save bandwidth, 
-      // but good for state consistency.
+      
+      // Save position to LocalStorage
+      saveToLocal(activeExam!.id, prevIdx, answers, examStartTime, 'IN_PROGRESS');
     }
   };
 
@@ -143,13 +216,16 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
     if (!force && !window.confirm("Are you sure you want to submit? You cannot undo this action.")) {
       return;
     }
+    // Final Sync and Clear Local
     syncProgress(activeExam!.id, currentQuestionIdx, answers, 'COMPLETED', examStartTime);
+    
     if(!force) alert('Exam Submitted Successfully!');
     setActiveExam(null);
     loadExamsAndStatus(); // Refresh list
   };
 
   const formatTime = (seconds: number) => {
+    if (seconds < 0) return "0:00";
     const m = Math.floor(seconds / 60);
     const s = seconds % 60;
     return `${m}:${s < 10 ? '0' : ''}${s}`;
@@ -161,10 +237,6 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
     const question = activeExam.questions[currentQuestionIdx];
     const isLast = currentQuestionIdx === activeExam.questions.length - 1;
     const isFirst = currentQuestionIdx === 0;
-
-    // Layout Logic:
-    // If MCQ: Use single column (Left panel takes full width, Right panel hidden)
-    // If Others: Use split columns
     const isMCQ = question.type === QuestionType.MULTIPLE_CHOICE;
 
     return (
@@ -196,7 +268,7 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
             
             <h2 className="text-xl font-semibold text-gray-800 mb-6 whitespace-pre-wrap leading-relaxed">{question.text}</h2>
             
-            {/* MCQ Options displayed inline for Full Width */}
+            {/* MCQ Options */}
             {isMCQ && (
               <div className="space-y-3 mt-8 max-w-2xl mx-auto">
                 {question.options?.map((opt, idx) => (
@@ -219,7 +291,7 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
               </div>
             )}
 
-            {/* Hint for Java Code */}
+            {/* Java Requirements */}
             {question.type === QuestionType.JAVA_CODE && (
               <div className="bg-blue-50 p-4 rounded-lg border border-blue-100 text-sm text-blue-800 mb-4">
                  <h4 className="font-bold mb-1">Requirements:</h4>
@@ -230,7 +302,7 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
               </div>
             )}
 
-             {/* Test Cases for Code */}
+             {/* Test Cases */}
              {question.type === QuestionType.JAVA_CODE && question.testCases && (
                <div className="mt-6">
                  <h4 className="text-sm font-bold text-gray-600 mb-2">Test Cases</h4>
@@ -246,7 +318,7 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
              )}
           </div>
 
-          {/* Right Panel (Input Area for Short Answer / Code) - Hidden for MCQ */}
+          {/* Right Panel */}
           {!isMCQ && (
             <div className="flex-1 bg-gray-50 flex flex-col shadow-inner">
               
@@ -324,7 +396,7 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
             <ul className="list-disc pl-5 space-y-2 text-sm">
               <li>Once you click <strong>"I Agree & Start"</strong>, the timer will begin immediately.</li>
               <li><strong>Do not close the browser.</strong> The timer continues to run on the server even if you disconnect.</li>
-              <li>If you lose connection, you can log back in and resume, but the time lost cannot be recovered.</li>
+              <li>If you lose connection, your answers are saved locally and will sync when you reconnect.</li>
               <li>Submitting the exam is <strong>final</strong>. You cannot re-enter.</li>
             </ul>
           </div>
