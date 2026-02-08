@@ -4,9 +4,12 @@ import { Exam, Question, QuestionType, StudentProgress, User, UserRole } from '.
 // ==========================================
 // SUPABASE CONFIGURATION
 // ==========================================
-// TODO: Replace with your actual Supabase URL and Key from Project Settings > API
-const SUPABASE_URL = ''; 
-const SUPABASE_KEY = ''; 
+// 1. ไปที่ Project Settings (รูปเฟือง) -> API
+// 2. นำค่า "Project URL" มาใส่ในตัวแปร SUPABASE_URL
+// 3. นำค่า "anon public" Key มาใส่ในตัวแปร SUPABASE_KEY
+
+const SUPABASE_URL = 'wbkpuqtzkpvhjnckinep'; // ตัวอย่าง: 'https://your-project-id.supabase.co'
+const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6India3B1cXR6a3B2aGpuY2tpbmVwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzA1NDE2OTMsImV4cCI6MjA4NjExNzY5M30.2Vsb4vl5WTnLLn60033Rcx-X6TfdDXrI1Qsuj8i_dN0'; // ตัวอย่าง: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...'
 
 // Initialize Client only if keys are present
 const supabase = (SUPABASE_URL && SUPABASE_KEY) 
