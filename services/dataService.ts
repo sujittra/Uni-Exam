@@ -197,6 +197,66 @@ export const calculateScore = (exam: Exam, answers: Record<string, any>): number
 };
 
 // ==========================================
+// RECALCULATION SERVICE (NEW)
+// ==========================================
+export const recalculateExamScores = async (examId: string): Promise<void> => {
+  console.log(`Starting recalculation for Exam: ${examId}`);
+  let exam: Exam | undefined;
+  let progressList: any[] = [];
+
+  // 1. Fetch Exam Definition & Existing Progress
+  if (supabase) {
+      const { data: eData } = await supabase.from('exams').select('*, questions(*)').eq('id', examId).single();
+      if(eData) exam = mapExam(eData);
+      const { data: pData } = await supabase.from('student_progress').select('*').eq('exam_id', examId);
+      progressList = pData || [];
+  } else {
+      const mockExams = getMockExams();
+      exam = mockExams.find(e => e.id === examId);
+      progressList = getMockProgress().filter(p => p.examId === examId);
+  }
+
+  if (!exam || progressList.length === 0) {
+    console.log("No exam or progress found to recalculate.");
+    return;
+  }
+
+  // 2. Iterate and Recalculate
+  const updates = progressList.map(p => {
+     const answers = safeParseJSON(p.answers);
+     const newScore = calculateScore(exam!, answers);
+     return {
+        student_id: p.student_id || p.studentId, // Handle both snake (DB) and camel (Mock)
+        exam_id: examId,
+        score: newScore,
+        // Preserve other fields for the upsert
+        current_question_index: p.current_question_index || p.currentQuestionIndex,
+        answers: answers,
+        status: p.status,
+        updated_at: new Date().toISOString()
+     };
+  });
+
+  // 3. Save Back to DB
+  if (supabase && updates.length > 0) {
+     // Batch Upsert
+     const { error } = await supabase.from('student_progress').upsert(updates, { onConflict: 'student_id, exam_id' });
+     if (error) console.error("Recalculation Save Error:", error);
+     else console.log(`Updated scores for ${updates.length} students.`);
+  } else if (!supabase) {
+     const mockProgress = getMockProgress();
+     updates.forEach(u => {
+        const idx = mockProgress.findIndex(mp => mp.studentId === u.student_id && mp.examId === u.exam_id);
+        if (idx >= 0) {
+            mockProgress[idx].score = u.score;
+            mockProgress[idx].lastUpdated = Date.now();
+        }
+     });
+     saveMockData(STORAGE_KEYS.PROGRESS, mockProgress);
+  }
+};
+
+// ==========================================
 // AUTH & USER MANAGEMENT
 // ==========================================
 
@@ -391,7 +451,9 @@ export const getExamsForTeacher = async (teacherId?: string): Promise<Exam[]> =>
 };
 
 // UPDATED: Save created_by
-export const saveExam = async (exam: Exam): Promise<void> => {
+export const saveExam = async (exam: Exam): Promise<Exam> => {
+  let savedExamId = exam.id;
+
   if (supabase) {
     const examPayload = {
       title: exam.title,
@@ -401,19 +463,19 @@ export const saveExam = async (exam: Exam): Promise<void> => {
       assigned_sections: exam.assignedSections,
       created_by: exam.createdBy // Save ownership
     };
-    let examId = exam.id;
+    
     if (exam.id.startsWith('e') && exam.id.length < 20) {
       const { data: newExam, error: createError } = await supabase.from('exams').insert(examPayload).select().single();
       if (createError) throw createError;
-      examId = newExam.id;
+      savedExamId = newExam.id;
     } else {
-      const { error: updateError } = await supabase.from('exams').update(examPayload).eq('id', examId);
+      const { error: updateError } = await supabase.from('exams').update(examPayload).eq('id', savedExamId);
       if (updateError) throw updateError;
     }
-    await supabase.from('questions').delete().eq('exam_id', examId);
+    await supabase.from('questions').delete().eq('exam_id', savedExamId);
     if (exam.questions.length > 0) {
       const questionsPayload = exam.questions.map(q => ({
-        exam_id: examId,
+        exam_id: savedExamId,
         type: q.type,
         text: q.text,
         image_url: q.imageUrl,
@@ -426,19 +488,21 @@ export const saveExam = async (exam: Exam): Promise<void> => {
       const { error: qError } = await supabase.from('questions').insert(questionsPayload);
       if (qError) throw qError;
     }
-    return;
-  }
-  
-  const mockExams = getMockExams();
-  const index = mockExams.findIndex(e => e.id === exam.id);
-  let updatedExams;
-  if (index >= 0) {
-    updatedExams = [...mockExams];
-    updatedExams[index] = exam;
   } else {
-    updatedExams = [...mockExams, exam];
+    // Mock Save
+    const mockExams = getMockExams();
+    const index = mockExams.findIndex(e => e.id === exam.id);
+    let updatedExams;
+    if (index >= 0) {
+      updatedExams = [...mockExams];
+      updatedExams[index] = exam;
+    } else {
+      updatedExams = [...mockExams, exam];
+    }
+    saveMockData(STORAGE_KEYS.EXAMS, updatedExams);
   }
-  saveMockData(STORAGE_KEYS.EXAMS, updatedExams);
+
+  return { ...exam, id: savedExamId };
 };
 
 export const deleteExam = async (examId: string): Promise<void> => {
@@ -653,7 +717,8 @@ export const compileJavaCode = async (code: string, testCases: {input: string, o
   let finalOutputDetails = "";
   let allPassed = true;
 
-  const normalize = (str: string) => str.replace(/\s+/g, ' ').trim();
+  // Fix: Accept any type to avoid "unknown" assignment errors
+  const normalize = (str: any) => String(str || '').replace(/\s+/g, ' ').trim();
 
   const runTestCase = async (input: string, expected: string, index: number) => {
       try {
@@ -675,7 +740,8 @@ export const compileJavaCode = async (code: string, testCases: {input: string, o
               })
           });
 
-          const result = await response.json();
+          // Fix: Explicitly type result as any to avoid 'unknown' issues in strict mode
+          const result: any = await response.json();
           
           if (result.compile && result.compile.code !== 0) {
               return { 
@@ -691,7 +757,8 @@ export const compileJavaCode = async (code: string, testCases: {input: string, o
               };
           }
 
-          const actualOutput = result.run.stdout ? result.run.stdout.trim() : "";
+          // Fix: Safe cast to string
+          const actualOutput = result.run && result.run.stdout ? String(result.run.stdout).trim() : "";
           const normalizedExpected = normalize(expected);
           const normalizedActual = normalize(actualOutput);
           const passed = normalizedActual === normalizedExpected;

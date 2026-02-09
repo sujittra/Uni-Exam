@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { User, Exam, Question, QuestionType, StudentProgress } from '../types';
-import { saveExam, deleteExam, getExamsForTeacher, getLiveProgress, importStudents, updateExamStatus, getExamResults, uploadExamImage, getStudents } from '../services/dataService';
+import { saveExam, deleteExam, getExamsForTeacher, getLiveProgress, importStudents, updateExamStatus, getExamResults, uploadExamImage, getStudents, recalculateExamScores } from '../services/dataService';
 import { Card } from '../components/Card';
 import { Button } from '../components/Button';
 
@@ -28,6 +28,7 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ user, onLogo
   
   // Editor State
   const [editingExam, setEditingExam] = useState<Exam | null>(null);
+  const [isSaving, setIsSaving] = useState(false);
   
   // Import State
   const [importText, setImportText] = useState('');
@@ -104,9 +105,29 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ user, onLogo
   const handleSaveExam = async () => {
     if (!editingExam) return;
     if (!editingExam.title.trim()) return alert("Exam title is required");
-    await saveExam(editingExam);
-    setEditingExam(null);
-    loadExams();
+    
+    setIsSaving(true);
+    try {
+      // 1. Save the exam definition
+      const savedExam = await saveExam(editingExam);
+      
+      // 2. Automatically Re-calculate scores for all students who took this exam
+      //    (This ensures the DB scores match the new answer key immediately)
+      await recalculateExamScores(savedExam.id);
+      
+      setEditingExam(null);
+      loadExams();
+    } catch (e: any) {
+      alert("Error saving: " + e.message);
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const handleRecalculateScores = async (examId: string) => {
+    if (!confirm("This will re-grade all students based on the current answer key. Continue?")) return;
+    await recalculateExamScores(examId);
+    alert("Scores updated successfully.");
   };
 
   const handleImportStudents = async () => {
@@ -375,8 +396,8 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ user, onLogo
               <div className="container mx-auto px-4 py-4 flex justify-between items-center">
                  <h2 className="text-xl font-bold text-gray-800">Edit Exam</h2>
                  <div className="flex gap-2">
-                   <Button variant="secondary" onClick={() => setEditingExam(null)}>Cancel</Button>
-                   <Button onClick={handleSaveExam}>Save Changes</Button>
+                   <Button variant="secondary" onClick={() => setEditingExam(null)} disabled={isSaving}>Cancel</Button>
+                   <Button onClick={handleSaveExam} disabled={isSaving}>{isSaving ? 'Saving & Regrading...' : 'Save Changes'}</Button>
                  </div>
               </div>
            </div>
@@ -525,6 +546,7 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ user, onLogo
                       <Button size="sm" variant="primary" onClick={() => handleEditExam(exam)}>Edit / Manage</Button>
                       <Button size="sm" variant="outline" className="col-span-2" onClick={() => { setMonitoringExamId(exam.id); setActiveTab('MONITOR'); }}>Monitor Students</Button>
                       <button onClick={() => handleExportResults(exam.id, exam.title)} className="col-span-2 text-sm text-purple-600 hover:bg-purple-50 py-1 rounded border border-purple-200">📄 Export Scores</button>
+                      <button onClick={() => handleRecalculateScores(exam.id)} className="col-span-2 text-xs text-blue-500 hover:text-blue-700 mt-1 font-medium">↺ Re-grade Scores</button>
                       <button onClick={() => handleDeleteExam(exam.id)} className="col-span-2 text-xs text-red-400 hover:text-red-600 mt-1">Delete Exam</button>
                     </div>
                   </div>
