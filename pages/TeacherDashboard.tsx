@@ -24,6 +24,15 @@ const normalizeAnswerText = (text: any) => {
       .replace(/\s+/g, '');     // Remove all whitespace
   };
 
+// Helper: Safe Extract Code
+const getAnswerDisplay = (ans: any) => {
+    if (typeof ans === 'object' && ans !== null) {
+        if (ans.code) return ans.code;
+        return JSON.stringify(ans);
+    }
+    return String(ans);
+};
+
 export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ user, onLogout }) => {
   const [activeTab, setActiveTab] = useState<'EXAMS' | 'STUDENTS' | 'MONITOR'>('EXAMS');
   const [exams, setExams] = useState<Exam[]>([]);
@@ -45,6 +54,9 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ user, onLogo
   const [monitorSearch, setMonitorSearch] = useState('');
   const [monitorSortBy, setMonitorSortBy] = useState<SortOption>('ID');
   const [monitorSectionFilter, setMonitorSectionFilter] = useState<string>('ALL');
+  
+  // Review/Inspect Modal
+  const [inspectStudentId, setInspectStudentId] = useState<string | null>(null);
 
   // Roster Sort
   const [rosterSearch, setRosterSearch] = useState('');
@@ -394,6 +406,62 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ user, onLogo
     );
  };
 
+ const renderInspectModal = () => {
+    if (!inspectStudentId || !monitoringExamId) return null;
+    
+    const student = students.find(s => s.studentId === inspectStudentId);
+    const progress = liveData.find(p => p.studentId === inspectStudentId);
+    const exam = exams.find(e => e.id === monitoringExamId);
+
+    if (!student || !exam) return null;
+
+    return (
+        <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4 backdrop-blur-sm">
+            <div className="bg-white rounded-2xl w-full max-w-3xl max-h-[85vh] flex flex-col shadow-2xl animate-fade-in">
+                <div className="p-4 border-b flex justify-between items-center bg-gray-50 rounded-t-2xl">
+                    <div>
+                       <h3 className="font-bold text-lg text-gray-800">{student.name} ({student.studentId})</h3>
+                       <span className={`text-xs px-2 py-0.5 rounded-full font-bold ${progress?.status === 'COMPLETED' ? 'bg-green-100 text-green-700' : 'bg-yellow-100 text-yellow-700'}`}>
+                          {progress?.status || 'NOT STARTED'}
+                       </span>
+                    </div>
+                    <button onClick={() => setInspectStudentId(null)} className="text-gray-400 hover:text-gray-600 font-bold text-xl px-2">&times;</button>
+                </div>
+                <div className="p-6 overflow-y-auto flex-1 space-y-6">
+                    {progress ? (
+                        exam.questions.map((q, idx) => {
+                            const ans = progress.answers[q.id];
+                            return (
+                                <div key={q.id} className="border-b pb-4 last:border-0">
+                                    <div className="flex justify-between mb-2">
+                                        <span className="font-bold text-gray-700 text-sm">Q{idx+1}: {q.text}</span>
+                                        <span className="text-xs text-gray-400 bg-gray-100 px-2 rounded-full h-fit">{q.score} pts</span>
+                                    </div>
+                                    <div className="bg-gray-50 p-3 rounded-lg text-sm font-mono whitespace-pre-wrap border border-gray-200">
+                                        {ans ? getAnswerDisplay(ans) : <span className="text-gray-400 italic">No answer provided</span>}
+                                    </div>
+                                    {q.type === QuestionType.JAVA_CODE && typeof ans === 'object' && ans !== null && (
+                                       <div className="mt-2 text-xs flex gap-4">
+                                          <span className={`${ans.passed ? 'text-green-600' : 'text-red-500'} font-bold`}>
+                                             Compiler: {ans.passed ? 'PASSED' : 'FAILED'}
+                                          </span>
+                                       </div>
+                                    )}
+                                </div>
+                            );
+                        })
+                    ) : (
+                        <div className="text-center text-gray-400 py-10">Student has not started the exam yet.</div>
+                    )}
+                </div>
+                <div className="p-4 border-t bg-gray-50 rounded-b-2xl flex justify-end">
+                    <Button onClick={() => setInspectStudentId(null)}>Close</Button>
+                </div>
+            </div>
+        </div>
+    );
+ };
+
   // --- RENDER ---
   if (editingExam) {
      /* ... (Editor Code - Same as previous, omitted for brevity) ... */
@@ -685,7 +753,7 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ user, onLogo
                      const isIdle = display.status === 'IDLE';
 
                      return (
-                       <div key={user.studentId} className={`rounded-lg p-4 shadow border flex flex-col gap-3 transition-colors relative ${isIdle ? 'bg-gray-50 border-gray-200 opacity-75' : 'bg-white border-gray-200'}`}>
+                       <div key={user.studentId} className={`rounded-lg p-4 shadow border flex flex-col gap-3 transition-colors relative group/card cursor-pointer hover:shadow-md ${isIdle ? 'bg-gray-50 border-gray-200 opacity-75' : 'bg-white border-gray-200'}`} onClick={() => setInspectStudentId(user.studentId || null)}>
                          <div className="flex justify-between items-start">
                            <div>
                              <h4 className="font-bold text-gray-900">{user.name}</h4>
@@ -710,8 +778,9 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ user, onLogo
                            <span>{isIdle ? '-' : `Q: ${display.currentQ + 1}`}</span>
                          </div>
                          
-                         <div className="text-xs text-right text-gray-400 mt-1 border-t pt-2">
-                           {isIdle ? 'Waiting...' : `Last Active: ${new Date(display.lastUpdated).toLocaleTimeString()}`}
+                         <div className="text-xs text-right text-gray-400 mt-1 border-t pt-2 flex justify-between items-center">
+                           <span className="text-purple-500 font-bold opacity-0 group-hover/card:opacity-100 transition-opacity">Click to Inspect</span>
+                           <span>{isIdle ? 'Waiting...' : `Last Active: ${new Date(display.lastUpdated).toLocaleTimeString()}`}</span>
                          </div>
                        </div>
                      );
@@ -721,6 +790,9 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ user, onLogo
             )}
           </div>
         )}
+        
+        {/* INSPECT MODAL */}
+        {renderInspectModal()}
 
       </main>
     </div>

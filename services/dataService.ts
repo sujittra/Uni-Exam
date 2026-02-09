@@ -188,12 +188,20 @@ export const calculateScore = (exam: Exam, answers: Record<string, any>): number
          const isCorrect = q.acceptedAnswers?.some(a => normalizeAnswerText(a) === studentAns);
          if (isCorrect) totalScore += q.score;
       } else if (q.type === QuestionType.JAVA_CODE) {
-         // IMPROVED GRADING: Check for explicit "passed" flag from compiler result
-         if (typeof ans === 'object' && ans.passed === true) {
-           totalScore += q.score;
+         // IMPROVED GRADING: 
+         if (typeof ans === 'object') {
+             // 1. Strict Check: Passed all test cases
+             if (ans.passed === true) {
+                 totalScore += q.score;
+             } 
+             // 2. Fallback Check: Length check (e.g. wrote > 20 chars)
+             // This ensures students get points if they wrote code but forgot to run it or failed compilation
+             else if (ans.code && String(ans.code).length > 20) {
+                 totalScore += q.score; 
+             }
          } else if (typeof ans === 'string' && ans.length > 20) {
-           // Fallback if legacy string data
-           totalScore += q.score;
+             // Legacy string fallback
+             totalScore += q.score;
          }
       }
     }
@@ -752,7 +760,7 @@ export const compileJavaCode = async (code: string, testCases: {input: string, o
           });
 
           // Fix: Explicitly type result as any to avoid 'unknown' issues in strict mode
-          const result: any = await response.json();
+          const result = await response.json() as any;
           
           if (result.compile && result.compile.code !== 0) {
               return { 
@@ -768,8 +776,10 @@ export const compileJavaCode = async (code: string, testCases: {input: string, o
               };
           }
 
-          // Fix: Safe cast to string
-          const actualOutput = result.run && result.run.stdout ? String(result.run.stdout).trim() : "";
+          // Fix: Safe cast to string. Ensure result.run.stdout is treated as any before String() if needed, though String handles any.
+          const rawOutput = result.run && result.run.stdout ? result.run.stdout : "";
+          const actualOutput = String(rawOutput).trim();
+          
           const normalizedExpected = normalize(expected);
           const normalizedActual = normalize(actualOutput);
           const passed = normalizedActual === normalizedExpected;
