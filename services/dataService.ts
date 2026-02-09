@@ -146,6 +146,9 @@ const safeParseJSON = (input: any) => {
 // HELPER: Normalize Answer Text for Flexible Grading
 export const normalizeAnswerText = (text: any) => {
   if (!text) return '';
+  // Handle Object case (if coming from Java Answer Object)
+  if (typeof text === 'object' && text.code) return String(text.code).toLowerCase().replace(/\s+/g, '');
+  
   return String(text)
     .toLowerCase()
     .replace(/[\n\r]+/g, ',') // Convert newlines to commas (e.g. pop\npush -> pop,push)
@@ -185,8 +188,11 @@ export const calculateScore = (exam: Exam, answers: Record<string, any>): number
          const isCorrect = q.acceptedAnswers?.some(a => normalizeAnswerText(a) === studentAns);
          if (isCorrect) totalScore += q.score;
       } else if (q.type === QuestionType.JAVA_CODE) {
-         // Fallback grading: Length check > 20 chars
-         if (typeof ans === 'string' && ans.length > 20) {
+         // IMPROVED GRADING: Check for explicit "passed" flag from compiler result
+         if (typeof ans === 'object' && ans.passed === true) {
+           totalScore += q.score;
+         } else if (typeof ans === 'string' && ans.length > 20) {
+           // Fallback if legacy string data
            totalScore += q.score;
          }
       }
@@ -720,7 +726,12 @@ export const compileJavaCode = async (code: string, testCases: {input: string, o
   // Fix: Accept any type to avoid "unknown" assignment errors
   const normalize = (str: any) => String(str || '').replace(/\s+/g, ' ').trim();
 
-  const runTestCase = async (input: string, expected: string, index: number) => {
+  // Define return type explicitly
+  type RunResult = 
+    | { success: false; output: string; passed?: undefined; details?: undefined }
+    | { success: true; passed: boolean; details: string; output?: undefined };
+
+  const runTestCase = async (input: string, expected: string, index: number): Promise<RunResult> => {
       try {
           const response = await fetch(PISTON_API_URL, {
               method: 'POST',
@@ -746,14 +757,14 @@ export const compileJavaCode = async (code: string, testCases: {input: string, o
           if (result.compile && result.compile.code !== 0) {
               return { 
                   success: false, 
-                  output: `[Compilation Error]\n${result.compile.stderr || result.compile.stdout}` 
+                  output: `[Compilation Error]\n${String(result.compile.stderr || result.compile.stdout || '')}` 
               };
           }
 
           if (result.run && result.run.code !== 0 && result.run.signal !== null) {
               return {
                   success: false,
-                  output: `[Runtime Error]\n${result.run.stderr || result.run.stdout}`
+                  output: `[Runtime Error]\n${String(result.run.stderr || result.run.stdout || '')}`
               };
           }
 
@@ -770,7 +781,7 @@ export const compileJavaCode = async (code: string, testCases: {input: string, o
           };
 
       } catch (error: any) {
-          return { success: false, output: `System Error: ${error.message}` };
+          return { success: false, output: `System Error: ${error.message || error}` };
       }
   };
 
@@ -781,7 +792,7 @@ export const compileJavaCode = async (code: string, testCases: {input: string, o
       const result = await runTestCase(tc.input, tc.output, i);
 
       if (!result.success) {
-          finalOutputDetails += result.output + "\n";
+          finalOutputDetails += (result.output || "Unknown Error") + "\n";
           return { passed: false, output: finalOutputDetails };
       }
 

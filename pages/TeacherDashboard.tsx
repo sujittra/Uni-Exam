@@ -15,6 +15,9 @@ type SortDirection = 'ASC' | 'DESC';
 // HELPER: Normalize Answer Text (Duplicated from dataService for client-side rendering)
 const normalizeAnswerText = (text: any) => {
     if (!text) return '';
+    // Handle Object case (if coming from Java Answer Object)
+    if (typeof text === 'object' && text.code) return String(text.code).toLowerCase().replace(/\s+/g, '');
+
     return String(text)
       .toLowerCase()
       .replace(/[\n\r]+/g, ',') // Convert newlines to commas
@@ -353,7 +356,12 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ user, onLogo
                      const studentAns = normalizeAnswerText(ans);
                      isCorrect = q.acceptedAnswers?.some(a => normalizeAnswerText(a) === studentAns) || false;
                    } else {
-                     isCorrect = String(ans).length > 20; // Rough check for code
+                     // JAVA GRADING (Updated)
+                     if (typeof ans === 'object' && ans.passed === true) {
+                        isCorrect = true;
+                     } else if (typeof ans === 'string' && ans.length > 20) {
+                        isCorrect = true; // Fallback
+                     }
                    }
                  }
                  

@@ -65,6 +65,21 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
     }
   }, [activeExam, examStartTime, currentQuestionIdx]); // Removed answers from dependency to avoid timer reset
 
+  // Update code output when switching questions
+  useEffect(() => {
+    if(activeExam) {
+       const q = activeExam.questions[currentQuestionIdx];
+       if (q.type === QuestionType.JAVA_CODE) {
+          const ans = answers[q.id];
+          if (typeof ans === 'object' && ans.output) {
+             setCodeOutput(ans.output);
+          } else {
+             setCodeOutput('');
+          }
+       }
+    }
+  }, [currentQuestionIdx, activeExam]);
+
   const loadExamsAndStatus = async () => {
     const exams = await getExamsForStudent(user);
     setAvailableExams(exams);
@@ -185,7 +200,21 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
   const handleAnswerChange = (val: any) => {
     if (!activeExam) return;
     const qId = activeExam.questions[currentQuestionIdx].id;
-    const newAnswers = { ...answers, [qId]: val };
+    
+    // For Java, preserve structure if it exists
+    let newVal = val;
+    const currentAns = answers[qId];
+    if (activeExam.questions[currentQuestionIdx].type === QuestionType.JAVA_CODE) {
+        // If typing, reset passed status but keep previous output if we want (or clear it)
+        // Here we clear passed status because code changed
+        if (typeof currentAns === 'object') {
+           newVal = { ...currentAns, code: val, passed: false }; 
+        } else {
+           newVal = { code: val, output: '', passed: false };
+        }
+    }
+
+    const newAnswers = { ...answers, [qId]: newVal };
     setAnswers(newAnswers);
     answersRef.current = newAnswers; // Update Ref immediately
   };
@@ -195,19 +224,42 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
     const q = activeExam.questions[currentQuestionIdx];
     if (q.type !== QuestionType.JAVA_CODE || !q.testCases) return;
     
-    const code = answers[q.id] || '';
+    // Extract code
+    const val = answers[q.id];
+    const code = (typeof val === 'object' ? val.code : val) || '';
+
     setIsCompiling(true);
     setCodeOutput('Compiling and Running...');
     
     const result = await compileJavaCode(code, q.testCases);
     setCodeOutput(result.output);
     setIsCompiling(false);
+
+    // Save Execution Result to DB (via Answers state)
+    const newEntry = {
+        code: code,
+        output: result.output,
+        passed: result.passed
+    };
+    const newAnswers = { ...answers, [q.id]: newEntry };
+    setAnswers(newAnswers);
+    answersRef.current = newAnswers;
+    
+    // Trigger save immediately so status persists even if they reload
+    syncProgress(activeExam.id, currentQuestionIdx, newAnswers, 'IN_PROGRESS', examStartTime, true);
   };
 
   const formatTime = (seconds: number) => {
     const m = Math.floor(seconds / 60);
     const s = seconds % 60;
     return `${m}:${s < 10 ? '0' : ''}${s}`;
+  };
+
+  // Helper to extract code string from potential object answer
+  const getCodeValue = (ans: any) => {
+      if (!ans) return '';
+      if (typeof ans === 'object') return ans.code || '';
+      return ans;
   };
 
   // --- RENDER ---
@@ -285,7 +337,7 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
                            <textarea 
                               className="flex-1 w-full p-4 rounded-xl border-2 border-gray-200 focus:border-purple-500 focus:ring-0 outline-none resize-none font-mono text-sm bg-gray-50"
                               placeholder="// Write your Java code here class Main { public static void main(String[] args) { ... } }"
-                              value={answers[q.id] || ''}
+                              value={getCodeValue(answers[q.id])}
                               onChange={(e) => handleAnswerChange(e.target.value)}
                            />
                            <div className="flex justify-between items-center">
