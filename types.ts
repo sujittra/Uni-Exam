@@ -65,5 +65,6 @@ export interface StudentProgress {
   status: 'IDLE' | 'IN_PROGRESS' | 'COMPLETED';
   startedAt?: number; // Timestamp when student started the exam
   autoSubmitted?: boolean; // True if the exam was auto-submitted because time ran out, rather than a manual submit
+  tabSwitchCount?: number; // Times the student left the exam view (tab/app switch, or exited forced fullscreen)
   lastUpdated: number;
 }

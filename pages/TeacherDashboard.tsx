@@ -469,9 +469,16 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ user, onLogo
                 <div className="p-4 border-b flex justify-between items-center bg-gray-50 rounded-t-2xl">
                     <div>
                        <h3 className="font-bold text-lg text-gray-800">{student.name} ({student.studentId})</h3>
-                       <span className={`text-xs px-2 py-0.5 rounded-full font-bold ${progress?.status === 'COMPLETED' ? 'bg-green-100 text-green-700' : 'bg-yellow-100 text-yellow-700'}`}>
-                          {progress?.status || 'NOT STARTED'}
-                       </span>
+                       <div className="flex items-center gap-2 mt-1">
+                          <span className={`text-xs px-2 py-0.5 rounded-full font-bold ${progress?.status === 'COMPLETED' ? 'bg-green-100 text-green-700' : 'bg-yellow-100 text-yellow-700'}`}>
+                             {progress?.status || 'NOT STARTED'}
+                          </span>
+                          {(progress?.tabSwitchCount || 0) > 0 && (
+                             <span className="text-xs px-2 py-0.5 rounded-full font-bold bg-amber-100 text-amber-700">
+                                ⚠️ Left exam view {progress!.tabSwitchCount}x
+                             </span>
+                          )}
+                       </div>
                     </div>
                     <button onClick={() => setInspectStudentId(null)} className="text-gray-400 hover:text-gray-600 font-bold text-xl px-2">&times;</button>
                 </div>
@@ -889,7 +896,13 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ user, onLogo
                            <span>{display.percent}% Done</span>
                            <span>{isIdle ? '-' : `Q: ${display.currentQ + 1}`}</span>
                          </div>
-                         
+
+                         {(progress?.tabSwitchCount || 0) > 0 && (
+                           <div className="text-xs font-bold text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-2 py-1 w-fit">
+                             ⚠️ Left exam view {progress!.tabSwitchCount}x
+                           </div>
+                         )}
+
                          {canReopen && (
                            <button
                              onClick={(e) => { e.stopPropagation(); handleReopenStudent(user.studentId!); }}

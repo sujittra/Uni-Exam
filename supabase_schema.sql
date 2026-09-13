@@ -72,6 +72,7 @@ create table public.student_progress (
   status text check (status in ('IDLE', 'IN_PROGRESS', 'COMPLETED')) default 'IDLE',
   started_at timestamp with time zone, -- NEW: To track strict timing
   auto_submitted boolean default false, -- True if submitted because the timer ran out, not a manual submit
+  tab_switch_count int default 0, -- Times the student left the exam view (tab/app switch, exited fullscreen)
   -- Ensure one active attempt per student per exam
   unique(student_id, exam_id)
 );

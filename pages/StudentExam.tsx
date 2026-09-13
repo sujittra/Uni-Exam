@@ -25,6 +25,11 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
   const [answers, setAnswers] = useState<Record<string, any>>({});
   // Ref for Syncing (Guarantees latest value without stale closures)
   const answersRef = useRef<Record<string, any>>({});
+  // Counts exits from the exam view (tab switch, app switch, or leaving fullscreen) —
+  // logged for the teacher, never enforced client-side (can't truly block tab-switching)
+  const tabSwitchCountRef = useRef<number>(0);
+  // Suppresses the fullscreen-exit violation we trigger ourselves when the exam ends
+  const isEndingExamRef = useRef(false);
   
   const [timeLeft, setTimeLeft] = useState(0);
   const [examStartTime, setExamStartTime] = useState<number>(0);
@@ -66,6 +71,29 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
       return () => clearInterval(timer);
     }
   }, [activeExam, examStartTime, currentQuestionIdx]); // Removed answers from dependency to avoid timer reset
+
+  // Proctoring: log (don't block — browsers can't truly prevent tab/app switching)
+  // every time the student leaves the exam view: switches tabs/apps, minimizes, or
+  // exits the forced fullscreen mode. Visible to the teacher in Monitor/Inspect.
+  useEffect(() => {
+    if (!activeExam) return;
+
+    const recordViolation = () => {
+      if (isEndingExamRef.current) return; // we're exiting fullscreen ourselves on submit
+      tabSwitchCountRef.current += 1;
+      syncProgress(activeExam.id, currentQuestionIdx, answersRef.current, 'IN_PROGRESS', examStartTime, true);
+    };
+
+    const handleVisibility = () => { if (document.hidden) recordViolation(); };
+    const handleFullscreenChange = () => { if (!document.fullscreenElement) recordViolation(); };
+
+    document.addEventListener('visibilitychange', handleVisibility);
+    document.addEventListener('fullscreenchange', handleFullscreenChange);
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibility);
+      document.removeEventListener('fullscreenchange', handleFullscreenChange);
+    };
+  }, [activeExam, currentQuestionIdx, examStartTime]);
 
   // Update code output when switching questions
   useEffect(() => {
@@ -126,6 +154,11 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
         return;
     }
 
+    // Must be called synchronously within the click handler (before any await) to
+    // count as a user gesture — browsers reject requestFullscreen() otherwise.
+    // Not fatal if unsupported/rejected (e.g. iOS Safari) — exam still proceeds.
+    document.documentElement.requestFullscreen?.().catch(() => {});
+
     const localKey = getStorageKey(user.studentId!, exam.id);
     const localStr = localStorage.getItem(localKey);
     const localData = localStr ? JSON.parse(localStr) : null;
@@ -151,6 +184,8 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
     setExamStartTime(startTime);
     setAnswers(finalData?.answers || {});
     answersRef.current = finalData?.answers || {};
+    tabSwitchCountRef.current = finalData?.tabSwitchCount || 0;
+    isEndingExamRef.current = false;
     setCurrentQuestionIdx(finalData?.currentQuestionIndex || 0);
     setShowTOS(null);
   };
@@ -172,6 +207,7 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
       status,
       startedAt, // Persist start time
       autoSubmitted,
+      tabSwitchCount: tabSwitchCountRef.current,
       lastUpdated: Date.now()
     };
     
@@ -190,13 +226,18 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
   const finishExam = async (force: boolean = false) => {
     if (!activeExam) return;
     if (!force && !window.confirm("Are you sure you want to submit? You cannot change answers after submission.")) return;
-    
+
+    isEndingExamRef.current = true;
+    if (document.fullscreenElement) {
+      document.exitFullscreen?.().catch(() => {});
+    }
+
     // Calculate FINAL Score
     const finalScore = calculateScore(activeExam, answersRef.current);
 
     await syncProgress(activeExam.id, currentQuestionIdx, answersRef.current, 'COMPLETED', examStartTime, false, force);
     alert(`Exam Submitted! Your Score: ${finalScore}`);
-    
+
     setActiveExam(null);
     loadExamsAndStatus();
   };

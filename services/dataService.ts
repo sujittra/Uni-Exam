@@ -169,6 +169,7 @@ const mapProgress = (p: any, userName: string = ''): StudentProgress => ({
   status: p.status,
   startedAt: p.started_at ? new Date(p.started_at).getTime() : undefined,
   autoSubmitted: !!p.auto_submitted,
+  tabSwitchCount: p.tab_switch_count || 0,
   lastUpdated: new Date(p.updated_at).getTime()
 });
 
@@ -641,6 +642,7 @@ export const submitStudentProgress = async (progress: StudentProgress): Promise<
         score: progress.score, // CRITICAL: Save the actual calculated score
         status: progress.status,
         auto_submitted: !!progress.autoSubmitted,
+        tab_switch_count: progress.tabSwitchCount || 0,
         updated_at: new Date().toISOString()
       };
       if (progress.startedAt) {

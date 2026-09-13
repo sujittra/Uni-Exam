@@ -134,7 +134,17 @@ NOTIFY pgrst, 'reload schema';
 
 **และต้องตั้งค่า Environment Variables เพิ่มบน Vercel** (Project Settings > Environment Variables — ห้ามใส่ใน `.env.local`):
 - `SUPABASE_URL` = Project URL เดียวกับที่ใช้ใน `services/dataService.ts`
-- `SUPABASE_SERVICE_ROLE_KEY` = ไปที่ Supabase Dashboard > Project Settings > API > คัดลอกค่า **`service_role` secret** (คนละตัวกับ `anon` key — ตัวนี้ bypass RLS ได้ทั้งหมด ห้ามใส่ในโค้ด client หรือ `.env.local` เด็ดขาด)
+- `SUPABASE_SERVICE_ROLE_KEY` (หรือ `SB_SERVICE_ROLE_KEY` ถ้าตัวแรกถูกล็อกโดย Vercel-Supabase integration) = ไปที่ Supabase Dashboard > Project Settings > API > คัดลอกค่า **`service_role` secret** ของ project เดียวกับ `SUPABASE_URL` ด้านบน (คนละตัวกับ `anon` key — ตัวนี้ bypass RLS ได้ทั้งหมด ห้ามใส่ในโค้ด client หรือ `.env.local` เด็ดขาด)
+
+### เพิ่งอัปเดต: นับจำนวนครั้งที่นักเรียนออกจากหน้าสอบ (สลับแท็บ/แอป หรือออกจาก Fullscreen)
+ถ้า Database สร้างไว้ก่อนหน้านี้ ต้องเพิ่มคอลัมน์ใหม่:
+
+```sql
+ALTER TABLE public.student_progress
+ADD COLUMN IF NOT EXISTS tab_switch_count int default 0;
+
+NOTIFY pgrst, 'reload schema';
+```
 
 ## หมายเหตุ
 - ระบบ Dashboard ใช้อาศัยฟีเจอร์ **Realtime** ซึ่งสคริปต์ SQL ได้เปิดใช้งานให้แล้วในบรรทัด `alter publication supabase_realtime...`
