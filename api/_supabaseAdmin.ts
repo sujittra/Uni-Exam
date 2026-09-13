@@ -10,7 +10,11 @@
 // exposes it to the client under that name) — fall back to that if a plain
 // SUPABASE_URL isn't set, so this works with either naming.
 const SUPABASE_URL = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || '';
-const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
+// SUPABASE_SERVICE_ROLE_KEY may be locked/managed by the Vercel-Supabase integration
+// (pointing at whatever project the integration auto-linked, not necessarily the one
+// this app actually uses) — SB_SERVICE_ROLE_KEY is a plain, freely-editable fallback
+// for pointing this at the correct project's service_role secret instead.
+const SUPABASE_SERVICE_ROLE_KEY = process.env.SB_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY || '';
 
 export const isSupabaseAdminConfigured = () => !!(SUPABASE_URL && SUPABASE_SERVICE_ROLE_KEY);
 
