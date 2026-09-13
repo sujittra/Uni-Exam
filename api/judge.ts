@@ -11,7 +11,7 @@
 // Test cases are graded IN PARALLEL (not one-by-one) — each one is its own create+poll+
 // fetch round trip to Sphere Engine, and running them sequentially risked exceeding the
 // Vercel function's execution time limit with more than a couple of test cases.
-import { supabaseAdmin, isSupabaseAdminConfigured } from './_supabaseAdmin';
+import { pgSelect, isSupabaseAdminConfigured } from './_supabaseAdmin';
 
 const SPHERE_SUBDOMAIN = process.env.SPHERE_ENGINE_SUBDOMAIN;
 const SPHERE_TOKEN = process.env.SPHERE_ENGINE_TOKEN;
@@ -149,20 +149,19 @@ export default async function handler(req: any, res: any) {
       return;
     }
 
-    const supabase = supabaseAdmin!;
-    const { data: question, error: qError } = await supabase
-      .from('questions')
-      .select('test_cases')
-      .eq('id', questionId)
-      .single();
+    const { data: questions, error: qError } = await pgSelect<any[]>(
+      'questions',
+      `id=eq.${questionId}&select=test_cases`
+    );
+    const question = questions?.[0];
     if (qError || !question) {
       res.status(200).json({ passed: false, output: `System Error: Could not load question (${qError?.message || 'not found'}).` });
       return;
     }
-    const { data: hiddenRows, error: hError } = await supabase
-      .from('question_hidden_test_cases')
-      .select('input, output')
-      .eq('question_id', questionId);
+    const { data: hiddenRows, error: hError } = await pgSelect<any[]>(
+      'question_hidden_test_cases',
+      `question_id=eq.${questionId}&select=input,output`
+    );
     if (hError) {
       res.status(200).json({ passed: false, output: `System Error: Could not load hidden test cases (${hError.message}).` });
       return;
