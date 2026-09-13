@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { User, Exam, Question, QuestionType, StudentProgress } from '../types';
-import { getExamsForStudent, submitStudentProgress, compileJavaCode, getStudentProgress, calculateScore } from '../services/dataService';
+import { getExamsForStudent, submitStudentProgress, compileCode, getStudentProgress, calculateScore } from '../services/dataService';
 import { Button } from '../components/Button';
 import { Card } from '../components/Card';
 
@@ -219,6 +219,13 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
     answersRef.current = newAnswers; // Update Ref immediately
   };
 
+  const handleCodeFileUpload = (file: File | null) => {
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => handleAnswerChange(String(reader.result || ''));
+    reader.readAsText(file);
+  };
+
   const handleRunCode = async () => {
     if (!activeExam) return;
     const q = activeExam.questions[currentQuestionIdx];
@@ -231,7 +238,7 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
     setIsCompiling(true);
     setCodeOutput('Compiling and Running...');
     
-    const result = await compileJavaCode(code, q.testCases);
+    const result = await compileCode(code, q.testCases, q.language || 'java');
     setCodeOutput(result.output);
     setIsCompiling(false);
 
@@ -289,11 +296,11 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
          </div>
 
          {/* Exam Body */}
-         <div className="container mx-auto px-4 py-6 flex-1 max-w-5xl">
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 h-full">
-               
+         <div className="container mx-auto px-4 py-6 flex-1 max-w-3xl">
+            <div className="flex flex-col gap-6">
+
                {/* Question Panel */}
-               <div className="space-y-6">
+               <div className="space-y-4 bg-white rounded-2xl shadow-sm border border-gray-200 p-6">
                   <div className="flex justify-between items-end">
                      <span className="text-sm font-bold text-gray-400">Question {currentQuestionIdx + 1} of {activeExam.questions.length}</span>
                      {syncingStatus && <span className="text-xs text-purple-500 animate-pulse">{syncingStatus}</span>}
@@ -305,7 +312,7 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
                </div>
 
                {/* Answer Panel */}
-               <div className="flex flex-col h-full bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden">
+               <div className="flex flex-col bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden">
                   <div className="flex-1 p-6 overflow-y-auto">
                      <h3 className="text-sm font-bold text-gray-500 uppercase mb-4">Your Answer</h3>
                      
@@ -333,10 +340,48 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
                      )}
 
                      {q.type === QuestionType.JAVA_CODE && (
-                        <div className="flex flex-col h-full gap-4">
-                           <textarea 
-                              className="flex-1 w-full p-4 rounded-xl border-2 border-gray-200 focus:border-purple-500 focus:ring-0 outline-none resize-none font-mono text-sm bg-gray-50"
-                              placeholder="// Write your Java code here class Main { public static void main(String[] args) { ... } }"
+                        <div className="flex flex-col gap-4">
+                           <div className="flex justify-between items-center">
+                              <span className="text-xs font-bold text-gray-500">
+                                 {q.language === 'python3' ? '🐍 Python 3' : '☕ Java'}
+                              </span>
+                              {q.allowFileUpload !== false && (
+                                 <label className="text-xs text-purple-600 font-medium cursor-pointer hover:text-purple-800">
+                                    📁 Upload {q.language === 'python3' ? '.py' : '.java'} file
+                                    <input
+                                       type="file"
+                                       accept={q.language === 'python3' ? '.py' : '.java'}
+                                       className="hidden"
+                                       onChange={(e) => handleCodeFileUpload(e.target.files?.[0] || null)}
+                                    />
+                                 </label>
+                              )}
+                           </div>
+
+                           {q.testCases && q.testCases.length > 0 && (
+                              <div className="bg-gray-50 border border-gray-200 rounded-xl p-3 space-y-2">
+                                 <p className="text-xs font-bold text-gray-500 uppercase">Test Cases</p>
+                                 <div className="space-y-1.5">
+                                    {q.testCases.filter(tc => !tc.hidden).map((tc, tcIdx) => (
+                                       <div key={tcIdx} className="grid grid-cols-2 gap-2 text-xs font-mono">
+                                          <div className="bg-white border rounded px-2 py-1 truncate"><span className="text-gray-400">Input: </span>{tc.input}</div>
+                                          <div className="bg-white border rounded px-2 py-1 truncate"><span className="text-gray-400">Output: </span>{tc.output}</div>
+                                       </div>
+                                    ))}
+                                 </div>
+                                 {q.testCases.some(tc => tc.hidden) && (
+                                    <p className="text-xs text-gray-400 italic">
+                                       + {q.testCases.filter(tc => tc.hidden).length} hidden test case(s) also used for grading
+                                    </p>
+                                 )}
+                              </div>
+                           )}
+
+                           <textarea
+                              className="w-full h-64 p-4 rounded-xl border-2 border-gray-200 focus:border-purple-500 focus:ring-0 outline-none resize-none font-mono text-sm bg-gray-50"
+                              placeholder={q.language === 'python3'
+                                 ? '# Write your Python 3 code here\n# Read input via input(), print result via print(...)'
+                                 : '// Write your Java code here class Main { public static void main(String[] args) { ... } }'}
                               value={getCodeValue(answers[q.id])}
                               onChange={(e) => handleAnswerChange(e.target.value)}
                            />

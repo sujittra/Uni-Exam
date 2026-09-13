@@ -57,6 +57,24 @@ ADD COLUMN IF NOT EXISTS started_at timestamp with time zone;
 NOTIFY pgrst, 'reload schema';
 ```
 
+### Error: `PGRST204: Could not find the 'language' column` (หรือไม่เห็นตัวเลือกภาษา Python)
+หากคุณสร้าง Database ไว้ก่อนที่ระบบจะรองรับ Python 3 ตารางเก่าจะยังไม่มีคอลัมน์ `language` สำหรับโจทย์เขียนโค้ด
+**วิธีแก้ไข:**
+1. ไปที่ Supabase > SQL Editor
+2. กด New Query
+3. Run คำสั่งต่อไปนี้:
+
+```sql
+ALTER TABLE public.questions 
+ADD COLUMN IF NOT EXISTS language text check (language in ('java', 'python3')) default 'java';
+
+ALTER TABLE public.questions 
+ADD COLUMN IF NOT EXISTS allow_file_upload boolean default true;
+
+-- สั่งให้ API Refresh Cache
+NOTIFY pgrst, 'reload schema';
+```
+
 ## หมายเหตุ
 - ระบบ Dashboard ใช้อาศัยฟีเจอร์ **Realtime** ซึ่งสคริปต์ SQL ได้เปิดใช้งานให้แล้วในบรรทัด `alter publication supabase_realtime...`
 - ระบบ Login ปัจจุบันออกแบบมาให้ใช้ `student_id` ในตาราง `users` ในการตรวจสอบสิทธิ์แบบง่าย (เพื่อให้ตรงกับ requirement นำเข้า Excel) โดยไม่ต้องใช้ Supabase Auth (Email/Password) ที่ซับซ้อนเกินไปสำหรับเฟสแรก

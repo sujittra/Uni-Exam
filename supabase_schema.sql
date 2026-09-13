@@ -36,6 +36,8 @@ create table public.questions (
   options text[], -- For MCQ: Array of choices
   correct_option_index int, -- For MCQ: Index of correct choice (0-3)
   test_cases jsonb, -- For JAVA: JSON array [{"input": "...", "output": "..."}]
+  language text check (language in ('java', 'python3')) default 'java', -- For JAVA (code) questions: programming language
+  allow_file_upload boolean default true, -- For JAVA (code) questions: whether students may upload a code file instead of typing
   accepted_answers text[] -- For SHORT_ANSWER: Array of valid answers e.g. ['java', 'Java']
 );
 

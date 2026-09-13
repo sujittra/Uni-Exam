@@ -1,5 +1,5 @@
 import { createClient } from '@supabase/supabase-js';
-import { Exam, Question, QuestionType, StudentProgress, User, UserRole } from '../types';
+import { CodeLanguage, Exam, Question, QuestionType, StudentProgress, TestCase, User, UserRole } from '../types';
 
 // ==========================================
 // SUPABASE CONFIGURATION
@@ -9,8 +9,8 @@ const SUPABASE_URL = (import.meta as any).env?.VITE_SUPABASE_URL || 'https://wbk
 const SUPABASE_KEY = (import.meta as any).env?.VITE_SUPABASE_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6India3B1cXR6a3B2aGpuY2tpbmVwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzA1NDE2OTMsImV4cCI6MjA4NjExNzY5M30.2Vsb4vl5WTnLLn60033Rcx-X6TfdDXrI1Qsuj8i_dN0';
 
 // Initialize Client only if keys are present
-const supabase = (SUPABASE_URL && SUPABASE_KEY) 
-  ? createClient(SUPABASE_URL, SUPABASE_KEY) 
+const supabase = (SUPABASE_URL && SUPABASE_KEY)
+  ? createClient(SUPABASE_URL, SUPABASE_KEY)
   : null;
 
 // ==========================================
@@ -72,6 +72,7 @@ const defaultExams: Exam[] = [
         type: QuestionType.JAVA_CODE,
         text: 'Write a Java method named `sum` that takes two integers and returns their sum.',
         score: 20,
+        language: 'java',
         testCases: [
           { input: '1 2', output: '3' },
           { input: '10 -5', output: '5' }
@@ -127,6 +128,8 @@ const mapQuestion = (q: any): Question => ({
   options: q.options,
   correctOptionIndex: q.correct_option_index,
   testCases: q.test_cases,
+  language: q.language || 'java',
+  allowFileUpload: q.allow_file_upload !== false,
   acceptedAnswers: q.accepted_answers
 });
 
@@ -497,6 +500,8 @@ export const saveExam = async (exam: Exam): Promise<Exam> => {
         options: q.options,
         correct_option_index: q.correctOptionIndex,
         test_cases: q.testCases,
+        language: q.language,
+        allow_file_upload: q.type === QuestionType.JAVA_CODE ? (q.allowFileUpload !== false) : undefined,
         accepted_answers: q.acceptedAnswers
       }));
       const { error: qError } = await supabase.from('questions').insert(questionsPayload);
@@ -719,14 +724,32 @@ export const getExamResults = async (examId: string): Promise<ExamResult[]> => {
 };
 
 // ==========================================
-// REAL REMOTE COMPILER (via Piston API)
+// REAL REMOTE COMPILER (via Judge0 CE / RapidAPI)
 // ==========================================
-const PISTON_API_URL = "https://emkc.org/api/v2/piston/execute";
+const JUDGE0_API_URL = "https://judge0-ce.p.rapidapi.com/submissions";
+const JUDGE0_HOST = "judge0-ce.p.rapidapi.com";
+// Set VITE_RAPIDAPI_KEY in .env.local (RapidAPI -> Judge0 CE -> subscribe to free tier)
+const RAPIDAPI_KEY = (import.meta as any).env?.VITE_RAPIDAPI_KEY || '';
 
-export const compileJavaCode = async (code: string, testCases: {input: string, output: string}[]): Promise<{passed: boolean, output: string}> => {
+// Judge0 CE language IDs
+const LANGUAGE_IDS: Record<CodeLanguage, number> = {
+  java: 62,    // OpenJDK 13.0.1
+  python3: 71  // Python 3.8.1
+};
+
+export const compileCode = async (code: string, testCases: TestCase[], language: CodeLanguage = 'java'): Promise<{passed: boolean, output: string}> => {
   if (!code.trim()) {
       return { passed: false, output: "Error: Code is empty." };
   }
+
+  if (!RAPIDAPI_KEY) {
+      return {
+          passed: false,
+          output: "System Error: Code runner is not configured. Set VITE_RAPIDAPI_KEY in .env.local (subscribe to the Judge0 CE API on RapidAPI to get a key)."
+      };
+  }
+
+  const languageId = LANGUAGE_IDS[language] || LANGUAGE_IDS.java;
 
   let finalOutputDetails = "";
   let allPassed = true;
@@ -735,51 +758,65 @@ export const compileJavaCode = async (code: string, testCases: {input: string, o
   const normalize = (str: any) => String(str || '').replace(/\s+/g, ' ').trim();
 
   // Define return type explicitly
-  type RunResult = 
+  type RunResult =
     | { success: false; output: string; passed?: undefined; details?: undefined }
     | { success: true; passed: boolean; details: string; output?: undefined };
 
-  const runTestCase = async (input: string, expected: string, index: number): Promise<RunResult> => {
+  const runTestCase = async (input: string, expected: string, index: number, hidden: boolean = false): Promise<RunResult> => {
       try {
-          const response = await fetch(PISTON_API_URL, {
+          const response = await fetch(`${JUDGE0_API_URL}?base64_encoded=false&wait=true`, {
               method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
+              headers: {
+                  'Content-Type': 'application/json',
+                  'X-RapidAPI-Key': RAPIDAPI_KEY,
+                  'X-RapidAPI-Host': JUDGE0_HOST
+              },
               body: JSON.stringify({
-                  language: "java",
-                  version: "15.0.2", 
-                  files: [
-                      {
-                          name: "Main.java",
-                          content: code
-                      }
-                  ],
-                  stdin: input,
-                  compile_timeout: 10000,
-                  run_timeout: 3000
+                  language_id: languageId,
+                  source_code: code,
+                  stdin: input
               })
           });
 
+          if (!response.ok) {
+              return { success: false, output: `System Error: Judge0 API returned ${response.status} ${response.statusText}` };
+          }
+
           // Fix: Explicitly type result as any to avoid 'unknown' issues in strict mode
           const result = await response.json() as any;
-          
-          if (result.compile && result.compile.code !== 0) {
-              return { 
-                  success: false, 
-                  output: `[Compilation Error]\n${String(result.compile.stderr || result.compile.stdout || '')}` 
-              };
-          }
+          const statusId = result.status?.id;
 
-          if (result.run && result.run.code !== 0 && result.run.signal !== null) {
+          // 6 = Compilation Error
+          if (statusId === 6) {
               return {
                   success: false,
-                  output: `[Runtime Error]\n${String(result.run.stderr || result.run.stdout || '')}`
+                  output: `[Compilation Error]\n${String(result.compile_output || '')}`
               };
           }
 
-          // Fix: Safe cast to string. Ensure result.run.stdout is treated as any before String() if needed, though String handles any.
-          const rawOutput = result.run && result.run.stdout ? result.run.stdout : "";
-          const actualOutput = String(rawOutput).trim();
-          
+          // 5 = Time Limit Exceeded
+          if (statusId === 5) {
+              return { success: false, output: "[Time Limit Exceeded]\nYour code took too long to run." };
+          }
+
+          // 7-12 = Runtime Errors (SIGSEGV, SIGXFSZ, SIGFPE, SIGABRT, NZEC, Other)
+          if (statusId >= 7 && statusId <= 12) {
+              return {
+                  success: false,
+                  output: `[Runtime Error]\n${String(result.stderr || result.message || '')}`
+              };
+          }
+
+          // Anything else unexpected (13 Internal Error, 14 Exec Format Error, etc.)
+          if (statusId !== 3) {
+              return {
+                  success: false,
+                  output: `[${result.status?.description || 'Unknown Error'}]\n${String(result.stderr || result.message || '')}`
+              };
+          }
+
+          const actualOutput = String(result.stdout || '').trim();
+
           const normalizedExpected = normalize(expected);
           const normalizedActual = normalize(actualOutput);
           const passed = normalizedActual === normalizedExpected;
@@ -787,7 +824,9 @@ export const compileJavaCode = async (code: string, testCases: {input: string, o
           return {
               success: true,
               passed: passed,
-              details: `Test Case ${index + 1}: Input [${input}] \n   -> Expected [${normalizedExpected}] \n   -> Actual   [${normalizedActual}] (${passed ? 'PASS' : 'FAIL'})`
+              details: hidden
+                  ? `Test Case ${index + 1}: [Hidden] (${passed ? 'PASS' : 'FAIL'})`
+                  : `Test Case ${index + 1}: Input [${input}] \n   -> Expected [${normalizedExpected}] \n   -> Actual   [${normalizedActual}] (${passed ? 'PASS' : 'FAIL'})`
           };
 
       } catch (error: any) {
@@ -799,10 +838,13 @@ export const compileJavaCode = async (code: string, testCases: {input: string, o
 
   for (let i = 0; i < testCases.length; i++) {
       const tc = testCases[i];
-      const result = await runTestCase(tc.input, tc.output, i);
+      const result = await runTestCase(tc.input, tc.output, i, !!tc.hidden);
 
       if (!result.success) {
-          finalOutputDetails += (result.output || "Unknown Error") + "\n";
+          const errorOutput = tc.hidden
+              ? `Test Case ${i + 1}: [Hidden] (FAIL - error during execution)`
+              : (result.output || "Unknown Error");
+          finalOutputDetails += errorOutput + "\n";
           return { passed: false, output: finalOutputDetails };
       }
 

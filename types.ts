@@ -18,9 +18,12 @@ export enum QuestionType {
   SHORT_ANSWER = 'SHORT_ANSWER'
 }
 
+export type CodeLanguage = 'java' | 'python3';
+
 export interface TestCase {
   input: string;
   output: string;
+  hidden?: boolean; // If true, students don't see this case's input/expected/actual, but it still counts toward grading
 }
 
 export interface Question {
@@ -33,7 +36,9 @@ export interface Question {
   options?: string[];
   correctOptionIndex?: number;
   // For Code
-  testCases?: TestCase[]; 
+  testCases?: TestCase[];
+  language?: CodeLanguage; // Programming language for code questions, defaults to 'java'
+  allowFileUpload?: boolean; // Whether students can upload a code file instead of typing, defaults to true
   // For Short Answer
   acceptedAnswers?: string[];
 }

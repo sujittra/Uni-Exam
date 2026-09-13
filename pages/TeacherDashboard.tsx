@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { User, Exam, Question, QuestionType, StudentProgress } from '../types';
+import { User, Exam, Question, QuestionType, StudentProgress, CodeLanguage } from '../types';
 import { saveExam, deleteExam, getExamsForTeacher, getLiveProgress, importStudents, updateExamStatus, getExamResults, uploadExamImage, getStudents, recalculateExamScores } from '../services/dataService';
 import { Card } from '../components/Card';
 import { Button } from '../components/Button';
@@ -211,6 +211,8 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ user, onLogo
       options: type === QuestionType.MULTIPLE_CHOICE ? ['Option 1', 'Option 2'] : undefined,
       correctOptionIndex: type === QuestionType.MULTIPLE_CHOICE ? 0 : undefined,
       testCases: type === QuestionType.JAVA_CODE ? [{ input: '', output: '' }] : undefined,
+      language: type === QuestionType.JAVA_CODE ? 'java' : undefined,
+      allowFileUpload: type === QuestionType.JAVA_CODE ? true : undefined,
       acceptedAnswers: type === QuestionType.SHORT_ANSWER ? [''] : undefined
     };
     setEditingExam({ ...editingExam, questions: [...editingExam.questions, newQ] });
@@ -442,6 +444,9 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ user, onLogo
                                     </div>
                                     {q.type === QuestionType.JAVA_CODE && typeof ans === 'object' && ans !== null && (
                                        <div className="mt-2 text-xs flex gap-4">
+                                          <span className="text-gray-500 font-bold">
+                                             {q.language === 'python3' ? '🐍 Python 3' : '☕ Java'}
+                                          </span>
                                           <span className={`${ans.passed ? 'text-green-600' : 'text-red-500'} font-bold`}>
                                              Compiler: {ans.passed ? 'PASSED' : 'FAILED'}
                                           </span>
@@ -504,7 +509,7 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ user, onLogo
                     <div className="flex gap-2 text-sm">
                       <Button size="sm" variant="outline" onClick={() => addQuestion(QuestionType.MULTIPLE_CHOICE)}>+ MCQ</Button>
                       <Button size="sm" variant="outline" onClick={() => addQuestion(QuestionType.SHORT_ANSWER)}>+ Short Answer</Button>
-                      <Button size="sm" variant="outline" onClick={() => addQuestion(QuestionType.JAVA_CODE)}>+ Java Code</Button>
+                      <Button size="sm" variant="outline" onClick={() => addQuestion(QuestionType.JAVA_CODE)}>+ Code (Java/Python)</Button>
                     </div>
                  </div>
                  {editingExam.questions.map((q, idx) => (
@@ -549,12 +554,39 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ user, onLogo
                              )}
                              {q.type === QuestionType.JAVA_CODE && (
                                <div className="space-y-2 bg-blue-50 p-3 rounded border border-blue-100">
-                                  <p className="text-xs font-bold text-blue-700 uppercase">Test Cases</p>
+                                  <div className="flex items-center justify-between">
+                                     <p className="text-xs font-bold text-blue-700 uppercase">Test Cases</p>
+                                     <div className="flex items-center gap-4">
+                                        <label className="flex items-center gap-1 text-xs font-bold text-blue-700 uppercase cursor-pointer">
+                                           <input
+                                              type="checkbox"
+                                              checked={q.allowFileUpload !== false}
+                                              onChange={(e) => updateQuestion(q.id, { allowFileUpload: e.target.checked })}
+                                           />
+                                           Allow File Upload
+                                        </label>
+                                        <div className="flex items-center gap-2">
+                                           <label className="text-xs font-bold text-blue-700 uppercase">Language</label>
+                                           <select
+                                              className="p-1 border rounded text-sm bg-white"
+                                              value={q.language || 'java'}
+                                              onChange={(e) => updateQuestion(q.id, { language: e.target.value as CodeLanguage })}
+                                           >
+                                              <option value="java">Java</option>
+                                              <option value="python3">Python 3</option>
+                                           </select>
+                                        </div>
+                                     </div>
+                                  </div>
                                   {q.testCases?.map((tc, tcIdx) => (
                                     <div key={tcIdx} className="grid grid-cols-2 gap-2 mb-2">
                                        <input className="p-1 border rounded text-sm font-mono" placeholder="Input" value={tc.input} onChange={(e) => { const newTC = [...(q.testCases || [])]; newTC[tcIdx] = { ...newTC[tcIdx], input: e.target.value }; updateQuestion(q.id, { testCases: newTC }); }} />
-                                       <div className="flex gap-1">
+                                       <div className="flex gap-1 items-center">
                                           <input className="flex-1 p-1 border rounded text-sm font-mono" placeholder="Output" value={tc.output} onChange={(e) => { const newTC = [...(q.testCases || [])]; newTC[tcIdx] = { ...newTC[tcIdx], output: e.target.value }; updateQuestion(q.id, { testCases: newTC }); }} />
+                                          <label className="flex items-center gap-1 text-xs text-blue-700 font-bold whitespace-nowrap cursor-pointer" title="Hide this test case's input/expected/actual from students; it still counts toward grading">
+                                             <input type="checkbox" checked={!!tc.hidden} onChange={(e) => { const newTC = [...(q.testCases || [])]; newTC[tcIdx] = { ...newTC[tcIdx], hidden: e.target.checked }; updateQuestion(q.id, { testCases: newTC }); }} />
+                                             Hidden
+                                          </label>
                                           <button onClick={() => { const newTC = q.testCases?.filter((_, i) => i !== tcIdx); updateQuestion(q.id, { testCases: newTC }); }} className="text-red-400 font-bold px-2">×</button>
                                        </div>
                                     </div>
