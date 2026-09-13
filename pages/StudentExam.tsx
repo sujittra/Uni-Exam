@@ -36,6 +36,8 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
   
   // UI State
   const [showTOS, setShowTOS] = useState<Exam | null>(null);
+  const [showCodeInfoModal, setShowCodeInfoModal] = useState(false);
+  const hasShownCodeInfoRef = useRef(false);
   
   // Compiler State
   const [codeOutput, setCodeOutput] = useState<string>('');
@@ -105,6 +107,10 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
              setCodeOutput(ans.output);
           } else {
              setCodeOutput('');
+          }
+          if (!hasShownCodeInfoRef.current) {
+             hasShownCodeInfoRef.current = true;
+             setShowCodeInfoModal(true);
           }
        }
     }
@@ -186,6 +192,7 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
     answersRef.current = finalData?.answers || {};
     tabSwitchCountRef.current = finalData?.tabSwitchCount || 0;
     isEndingExamRef.current = false;
+    hasShownCodeInfoRef.current = false;
     setCurrentQuestionIdx(finalData?.currentQuestionIndex || 0);
     setShowTOS(null);
   };
@@ -505,6 +512,31 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
                </div>
             </div>
          </div>
+
+         {/* Code Question Info Modal — explains the Test vs Submit buttons */}
+         {showCodeInfoModal && (
+            <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+               <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl animate-fade-in">
+                  <h2 className="text-xl font-bold text-gray-900 mb-0.5">วิธีใช้ปุ่มสำหรับโจทย์เขียนโค้ด</h2>
+                  <p className="text-xs text-gray-400 mb-4">How the code question buttons work</p>
+                  <div className="space-y-3 text-sm mb-6">
+                     <div className="bg-purple-50 border border-purple-100 rounded-xl p-3">
+                        <p className="font-bold text-purple-700">▶ ทดสอบ</p>
+                        <p className="text-gray-600">ใช้ทดลองรันโค้ดกับตัวอย่าง test case ที่มองเห็นได้ กดกี่ครั้งก็ได้ ไม่มีผลต่อคะแนน</p>
+                        <p className="text-xs text-gray-400 mt-1">Try your code against the visible sample test cases. Unlimited attempts — does not affect your score.</p>
+                     </div>
+                     <div className="bg-green-50 border border-green-100 rounded-xl p-3">
+                        <p className="font-bold text-green-700">✓ ส่งคำตอบ</p>
+                        <p className="text-gray-600">ใช้เมื่อพร้อมให้ตรวจจริง (รวม test case ที่ซ่อนอยู่ด้วย) — ผลจากปุ่มนี้คือคะแนนที่คุณจะได้รับ</p>
+                        <p className="text-xs text-gray-400 mt-1">Use this when you're ready to be graded for real (including hidden test cases) — this determines your score.</p>
+                     </div>
+                  </div>
+                  <div className="flex justify-end">
+                     <Button onClick={() => setShowCodeInfoModal(false)}>เข้าใจแล้ว</Button>
+                  </div>
+               </div>
+            </div>
+         )}
       </div>
     );
   }
@@ -586,17 +618,37 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
       {showTOS && (
          <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
             <div className="bg-white rounded-2xl max-w-lg w-full p-6 shadow-2xl animate-fade-in">
-               <h2 className="text-xl font-bold text-gray-900 mb-4">Exam Rules & Instructions</h2>
+               <h2 className="text-xl font-bold text-gray-900 mb-0.5">กติกาการสอบ</h2>
+               <p className="text-xs text-gray-400 mb-4">Exam Rules &amp; Instructions</p>
                <div className="space-y-3 text-gray-600 text-sm mb-6 bg-gray-50 p-4 rounded-lg">
-                  <p>1. You have <strong>{showTOS.durationMinutes} minutes</strong> to complete this exam.</p>
-                  <p>2. Do not refresh the page or close the browser tab repeatedly.</p>
-                  <p>3. Your progress is saved automatically every 30 seconds.</p>
-                  <p>4. Once submitted, you cannot change your answers.</p>
-                  <p>5. Malpractice or cheating attempts will be logged.</p>
+                  <div>
+                     <p>1. คุณมีเวลา <strong>{showTOS.durationMinutes} นาที</strong> ในการทำข้อสอบนี้</p>
+                     <p className="text-xs text-gray-400">You have {showTOS.durationMinutes} minutes to complete this exam.</p>
+                  </div>
+                  <div>
+                     <p>2. ห้ามรีเฟรชหน้าเว็บหรือปิดแท็บเบราว์เซอร์ซ้ำๆ</p>
+                     <p className="text-xs text-gray-400">Do not refresh the page or close the browser tab repeatedly.</p>
+                  </div>
+                  <div>
+                     <p>3. ระบบจะบันทึกความคืบหน้าอัตโนมัติทุก 30 วินาที</p>
+                     <p className="text-xs text-gray-400">Your progress is saved automatically every 30 seconds.</p>
+                  </div>
+                  <div>
+                     <p>4. เมื่อส่งคำตอบแล้ว จะไม่สามารถแก้ไขคำตอบได้อีก</p>
+                     <p className="text-xs text-gray-400">Once submitted, you cannot change your answers.</p>
+                  </div>
+                  <div>
+                     <p>5. หน้าจอจะเข้าสู่โหมดเต็มจอ (Fullscreen) อัตโนมัติ หากสลับแท็บ/สลับหน้าจอ หรือกด Esc ออกจากโหมดเต็มจอ ระบบจะบันทึกไว้เป็นการ "ออกจากหน้าสอบ" และแจ้งให้อาจารย์ทราบ</p>
+                     <p className="text-xs text-gray-400">The exam will enter fullscreen mode automatically. Switching tabs/screens or pressing Esc to exit fullscreen will be logged as "leaving the exam" and shown to your instructor.</p>
+                  </div>
+                  <div>
+                     <p>6. การทุจริตหรือพยายามทุจริตจะถูกบันทึกไว้</p>
+                     <p className="text-xs text-gray-400">Malpractice or cheating attempts will be logged.</p>
+                  </div>
                </div>
                <div className="flex gap-3 justify-end">
-                  <Button variant="secondary" onClick={() => setShowTOS(null)}>Cancel</Button>
-                  <Button onClick={() => initExamSession(showTOS)}>I Agree, Start Exam</Button>
+                  <Button variant="secondary" onClick={() => setShowTOS(null)}>ยกเลิก</Button>
+                  <Button onClick={() => initExamSession(showTOS)}>ยอมรับ เริ่มทำข้อสอบ</Button>
                </div>
             </div>
          </div>
