@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { User, Exam, Question, QuestionType, StudentProgress } from '../types';
 import { getExamsForStudent, submitStudentProgress, compileCode, getStudentProgress, calculateScore } from '../services/dataService';
+import { testPythonCode } from '../services/pyodideRunner';
 import { Button } from '../components/Button';
 import { Card } from '../components/Card';
 
@@ -34,6 +35,7 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
   // Compiler State
   const [codeOutput, setCodeOutput] = useState<string>('');
   const [isCompiling, setIsCompiling] = useState(false);
+  const [isTesting, setIsTesting] = useState(false);
 
   useEffect(() => {
     loadExamsAndStatus();
@@ -91,8 +93,10 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
        const localStr = localStorage.getItem(localKey);
        const localProg = localStr ? JSON.parse(localStr) : null;
 
-       // AUTO-SYNC FIX: If local says completed but DB is missing or old, push it.
-       if (localProg?.status === 'COMPLETED' && (!dbProg || dbProg.status !== 'COMPLETED')) {
+       // AUTO-SYNC FIX: If local says completed but DB is missing or genuinely behind local
+       // (e.g. a failed sync), push it. Skip this when the DB is actually newer than local
+       // (e.g. a teacher reopened the exam for editing) so that doesn't get overwritten.
+       if (localProg?.status === 'COMPLETED' && (!dbProg || (dbProg.status !== 'COMPLETED' && localProg.lastUpdated > dbProg.lastUpdated))) {
           console.log(`Auto-syncing completed exam: ${exam.id}`);
           setSyncingStatus(`Syncing exam data: ${exam.title}...`);
           const result = await submitStudentProgress(localProg);
@@ -151,9 +155,9 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
     setShowTOS(null);
   };
 
-  const syncProgress = async (examId: string, qIdx: number, ans: Record<string, any>, status: 'IDLE' | 'IN_PROGRESS' | 'COMPLETED', startedAt: number, bg: boolean = false) => {
+  const syncProgress = async (examId: string, qIdx: number, ans: Record<string, any>, status: 'IDLE' | 'IN_PROGRESS' | 'COMPLETED', startedAt: number, bg: boolean = false, autoSubmitted: boolean = false) => {
     if (!bg) setSyncingStatus('Saving...');
-    
+
     // Calculate current score (even if partial)
     const exam = availableExams.find(e => e.id === examId);
     const currentScore = exam ? calculateScore(exam, ans) : 0;
@@ -167,6 +171,7 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
       score: currentScore, // Save Score
       status,
       startedAt, // Persist start time
+      autoSubmitted,
       lastUpdated: Date.now()
     };
     
@@ -189,7 +194,7 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
     // Calculate FINAL Score
     const finalScore = calculateScore(activeExam, answersRef.current);
 
-    await syncProgress(activeExam.id, currentQuestionIdx, answersRef.current, 'COMPLETED', examStartTime, false);
+    await syncProgress(activeExam.id, currentQuestionIdx, answersRef.current, 'COMPLETED', examStartTime, false, force);
     alert(`Exam Submitted! Your Score: ${finalScore}`);
     
     setActiveExam(null);
@@ -226,19 +231,41 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
     reader.readAsText(file);
   };
 
+  // "ทดสอบ" — instant, unlimited, runs entirely in the browser (Python only) against
+  // just the visible sample test cases. Never touches hidden test cases or any
+  // external API, and doesn't affect the graded answer.
+  const handleTestCode = async () => {
+    if (!activeExam) return;
+    const q = activeExam.questions[currentQuestionIdx];
+    if (q.type !== QuestionType.JAVA_CODE || q.language !== 'python3' || !q.testCases) return;
+
+    const val = answers[q.id];
+    const code = (typeof val === 'object' ? val.code : val) || '';
+    const visibleTestCases = q.testCases.filter(tc => !tc.hidden);
+
+    setIsTesting(true);
+    setCodeOutput('Starting Python in your browser...');
+
+    const result = await testPythonCode(code, visibleTestCases);
+    setCodeOutput(result.output);
+    setIsTesting(false);
+  };
+
+  // "ส่งคำตอบ" — the graded run: goes through the remote judge against ALL test
+  // cases (including hidden ones) and its result is what's saved for scoring.
   const handleRunCode = async () => {
     if (!activeExam) return;
     const q = activeExam.questions[currentQuestionIdx];
-    if (q.type !== QuestionType.JAVA_CODE || !q.testCases) return;
-    
+    if (q.type !== QuestionType.JAVA_CODE) return;
+
     // Extract code
     const val = answers[q.id];
     const code = (typeof val === 'object' ? val.code : val) || '';
 
     setIsCompiling(true);
-    setCodeOutput('Compiling and Running...');
-    
-    const result = await compileCode(code, q.testCases, q.language || 'java');
+    setCodeOutput('Submitting for grading...');
+
+    const result = await compileCode(q.id, code, q.language || 'java');
     setCodeOutput(result.output);
     setIsCompiling(false);
 
@@ -260,6 +287,14 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
     const m = Math.floor(seconds / 60);
     const s = seconds % 60;
     return `${m}:${s < 10 ? '0' : ''}${s}`;
+  };
+
+  // Format a duration in ms as e.g. "12m 34s"
+  const formatDuration = (ms: number) => {
+    const totalSeconds = Math.max(0, Math.round(ms / 1000));
+    const m = Math.floor(totalSeconds / 60);
+    const s = totalSeconds % 60;
+    return `${m}m ${s}s`;
   };
 
   // Helper to extract code string from potential object answer
@@ -358,20 +393,20 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
                               )}
                            </div>
 
-                           {q.testCases && q.testCases.length > 0 && (
+                           {((q.testCases && q.testCases.length > 0) || (q.hiddenTestCaseCount || 0) > 0) && (
                               <div className="bg-gray-50 border border-gray-200 rounded-xl p-3 space-y-2">
                                  <p className="text-xs font-bold text-gray-500 uppercase">Test Cases</p>
                                  <div className="space-y-1.5">
-                                    {q.testCases.filter(tc => !tc.hidden).map((tc, tcIdx) => (
+                                    {q.testCases?.map((tc, tcIdx) => (
                                        <div key={tcIdx} className="grid grid-cols-2 gap-2 text-xs font-mono">
                                           <div className="bg-white border rounded px-2 py-1 truncate"><span className="text-gray-400">Input: </span>{tc.input}</div>
                                           <div className="bg-white border rounded px-2 py-1 truncate"><span className="text-gray-400">Output: </span>{tc.output}</div>
                                        </div>
                                     ))}
                                  </div>
-                                 {q.testCases.some(tc => tc.hidden) && (
+                                 {(q.hiddenTestCaseCount || 0) > 0 && (
                                     <p className="text-xs text-gray-400 italic">
-                                       + {q.testCases.filter(tc => tc.hidden).length} hidden test case(s) also used for grading
+                                       + {q.hiddenTestCaseCount} hidden test case(s) also used for grading
                                     </p>
                                  )}
                               </div>
@@ -386,10 +421,19 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
                               onChange={(e) => handleAnswerChange(e.target.value)}
                            />
                            <div className="flex justify-between items-center">
-                              <span className="text-xs text-gray-400">Output console below</span>
-                              <Button size="sm" onClick={handleRunCode} disabled={isCompiling}>
-                                 {isCompiling ? 'Running...' : '▶ Run Code'}
-                              </Button>
+                              <span className="text-xs text-gray-400">
+                                 {q.language === 'python3' ? 'Test = instant, unlimited (sample cases only)' : 'Output console below'}
+                              </span>
+                              <div className="flex gap-2">
+                                 {q.language === 'python3' && (
+                                    <Button size="sm" variant="outline" onClick={handleTestCode} disabled={isTesting || isCompiling}>
+                                       {isTesting ? 'Testing...' : '▶ ทดสอบ'}
+                                    </Button>
+                                 )}
+                                 <Button size="sm" onClick={handleRunCode} disabled={isCompiling || isTesting}>
+                                    {isCompiling ? 'Submitting...' : '✓ ส่งคำตอบ'}
+                                 </Button>
+                              </div>
                            </div>
                            <div className="h-32 bg-gray-900 rounded-xl p-3 text-xs font-mono text-green-400 overflow-y-auto whitespace-pre-wrap">
                               {codeOutput || '> Ready to compile...'}
@@ -457,9 +501,23 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
                      <Card key={exam.id} className="hover:shadow-lg transition-all">
                         <div className="flex justify-between items-start mb-4">
                            <h3 className="font-bold text-lg text-gray-900">{exam.title}</h3>
-                           {isCompleted && <span className="bg-green-100 text-green-700 text-xs px-2 py-1 rounded-full font-bold">Completed</span>}
+                           {isCompleted && (
+                              status.autoSubmitted ? (
+                                 <span className="bg-amber-100 text-amber-700 text-xs px-2 py-1 rounded-full font-bold whitespace-nowrap">⏱ Time's Up</span>
+                              ) : (
+                                 <span className="bg-green-100 text-green-700 text-xs px-2 py-1 rounded-full font-bold">Completed</span>
+                              )
+                           )}
                         </div>
-                        <p className="text-gray-500 text-sm mb-6 min-h-[40px]">{exam.description}</p>
+                        <p className="text-gray-500 text-sm mb-4 min-h-[40px]">{exam.description}</p>
+                        {isCompleted && (
+                           <div className="text-xs text-gray-400 mb-4 space-y-0.5">
+                              <div>Submitted: {new Date(status.lastUpdated).toLocaleString()}</div>
+                              {status.startedAt && (
+                                 <div>Time used: {formatDuration(status.lastUpdated - status.startedAt)}</div>
+                              )}
+                           </div>
+                        )}
                         <div className="flex items-center justify-between mt-auto pt-4 border-t">
                            <div className="text-xs text-gray-400">
                               <div>{exam.questions.length} Questions</div>

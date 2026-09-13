@@ -71,9 +71,70 @@ ADD COLUMN IF NOT EXISTS language text check (language in ('java', 'python3')) d
 ALTER TABLE public.questions 
 ADD COLUMN IF NOT EXISTS allow_file_upload boolean default true;
 
+ALTER TABLE public.student_progress 
+ADD COLUMN IF NOT EXISTS auto_submitted boolean default false;
+
 -- สั่งให้ API Refresh Cache
 NOTIFY pgrst, 'reload schema';
 ```
+
+### เพิ่งอัปเดต: ย้าย Hidden Test Case ออกจาก `questions.test_cases` (เพื่อความปลอดภัย)
+เดิม hidden test case ถูกเก็บปนอยู่ใน column `test_cases` เดียวกับ test case ที่เปิดเผย ซึ่งหลุดไปถึง browser นักเรียนได้ผ่าน network response (แม้ UI จะซ่อนไว้ก็ตาม) ตอนนี้ hidden test case ถูกย้ายไปเก็บในตารางแยก `question_hidden_test_cases` ที่เปิด Row Level Security ไว้แบบไม่มี policy ให้ `anon`/`authenticated` เลย (เข้าถึงได้เฉพาะผ่าน `service_role` key ฝั่ง server เท่านั้น)
+
+**ต้องรัน SQL migration นี้ (ครั้งเดียว) ถ้า Database ของคุณสร้างไว้ก่อนหน้านี้:**
+
+```sql
+-- 1. สร้างตารางใหม่ + คอลัมน์นับจำนวน
+CREATE TABLE IF NOT EXISTS public.question_hidden_test_cases (
+  id uuid DEFAULT gen_random_uuid() PRIMARY KEY,
+  question_id uuid REFERENCES public.questions(id) ON DELETE CASCADE NOT NULL,
+  input text NOT NULL,
+  output text NOT NULL,
+  created_at timestamp with time zone DEFAULT timezone('utc'::text, now()) NOT NULL
+);
+
+ALTER TABLE public.question_hidden_test_cases ENABLE ROW LEVEL SECURITY;
+-- ไม่ต้องเพิ่ม policy ใดๆ — ปล่อยว่างไว้ = anon/authenticated ถูกปฏิเสธทั้งหมดโดย default
+
+ALTER TABLE public.questions
+ADD COLUMN IF NOT EXISTS hidden_test_case_count int DEFAULT 0;
+
+-- 2. ย้ายข้อมูล hidden test case เดิม (ถ้ามี) ออกจาก test_cases ไปตารางใหม่
+DO $$
+DECLARE
+  q record;
+  hidden_items jsonb;
+  visible_items jsonb;
+BEGIN
+  FOR q IN SELECT id, test_cases FROM public.questions WHERE test_cases IS NOT NULL LOOP
+    hidden_items := (
+      SELECT jsonb_agg(elem) FROM jsonb_array_elements(q.test_cases) elem
+      WHERE (elem->>'hidden')::boolean IS TRUE
+    );
+    visible_items := (
+      SELECT jsonb_agg(elem) FROM jsonb_array_elements(q.test_cases) elem
+      WHERE (elem->>'hidden')::boolean IS NOT TRUE
+    );
+
+    IF hidden_items IS NOT NULL THEN
+      INSERT INTO public.question_hidden_test_cases (question_id, input, output)
+      SELECT q.id, elem->>'input', elem->>'output'
+      FROM jsonb_array_elements(hidden_items) elem;
+
+      UPDATE public.questions
+      SET test_cases = COALESCE(visible_items, '[]'::jsonb),
+          hidden_test_case_count = jsonb_array_length(hidden_items)
+      WHERE id = q.id;
+    END IF;
+  END LOOP;
+END $$;
+
+NOTIFY pgrst, 'reload schema';
+```
+
+**และต้องตั้งค่า Environment Variables เพิ่มบน Vercel** (Project Settings > Environment Variables — ห้ามใส่ใน `.env.local`):
+- `SUPABASE_URL` = Project URL เดียวกับที่ใช้ใน `services/dataService.ts`
+- `SUPABASE_SERVICE_ROLE_KEY` = ไปที่ Supabase Dashboard > Project Settings > API > คัดลอกค่า **`service_role` secret** (คนละตัวกับ `anon` key — ตัวนี้ bypass RLS ได้ทั้งหมด ห้ามใส่ในโค้ด client หรือ `.env.local` เด็ดขาด)
 
 ## หมายเหตุ
 - ระบบ Dashboard ใช้อาศัยฟีเจอร์ **Realtime** ซึ่งสคริปต์ SQL ได้เปิดใช้งานให้แล้วในบรรทัด `alter publication supabase_realtime...`

@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { User, Exam, Question, QuestionType, StudentProgress, CodeLanguage } from '../types';
-import { saveExam, deleteExam, getExamsForTeacher, getLiveProgress, importStudents, updateExamStatus, getExamResults, uploadExamImage, getStudents, recalculateExamScores } from '../services/dataService';
+import { saveExam, deleteExam, getExamsForTeacher, getLiveProgress, importStudents, updateExamStatus, getExamResults, uploadExamImage, getStudents, recalculateExamScores, reopenStudentProgress } from '../services/dataService';
 import { Card } from '../components/Card';
 import { Button } from '../components/Button';
 
@@ -343,6 +343,23 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ user, onLogo
      });
      return Array.from(seen.values()).sort((a, b) => a.localeCompare(b));
   }, [students]);
+
+  const monitoringExam = useMemo(() => exams.find(e => e.id === monitoringExamId), [exams, monitoringExamId]);
+
+  const [reopeningStudentId, setReopeningStudentId] = useState<string | null>(null);
+
+  const handleReopenStudent = async (studentId: string) => {
+    if (!monitoringExamId) return;
+    if (!window.confirm('Allow this student to edit their answers again?')) return;
+    setReopeningStudentId(studentId);
+    try {
+      await reopenStudentProgress(studentId, monitoringExamId);
+      const data = await getLiveProgress(monitoringExamId);
+      setLiveData(data);
+    } finally {
+      setReopeningStudentId(null);
+    }
+  };
 
   // --- RENDER OVERALL STATS ---
   const renderQuestionStats = () => {
@@ -818,8 +835,12 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ user, onLogo
                      <p className="text-gray-500 col-span-3 text-center py-10">No students match your filter.</p>
                    )}
                    
-                   {processedMonitorData.map(({ user, display }) => {
+                   {processedMonitorData.map(({ user, progress, display }) => {
                      const isIdle = display.status === 'IDLE';
+                     const timeRemainingMs = progress?.startedAt && monitoringExam
+                        ? monitoringExam.durationMinutes * 60000 - (Date.now() - progress.startedAt)
+                        : 0;
+                     const canReopen = display.status === 'COMPLETED' && timeRemainingMs > 0;
 
                      return (
                        <div key={user.studentId} className={`rounded-lg p-4 shadow border flex flex-col gap-3 transition-colors relative group/card cursor-pointer hover:shadow-md ${isIdle ? 'bg-gray-50 border-gray-200 opacity-75' : 'bg-white border-gray-200'}`} onClick={() => setInspectStudentId(user.studentId || null)}>
@@ -847,6 +868,16 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ user, onLogo
                            <span>{isIdle ? '-' : `Q: ${display.currentQ + 1}`}</span>
                          </div>
                          
+                         {canReopen && (
+                           <button
+                             onClick={(e) => { e.stopPropagation(); handleReopenStudent(user.studentId!); }}
+                             disabled={reopeningStudentId === user.studentId}
+                             className="text-xs font-bold text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-1.5 hover:bg-amber-100 transition-colors disabled:opacity-50"
+                           >
+                             {reopeningStudentId === user.studentId ? 'Reopening...' : `↺ Allow Edit (${Math.ceil(timeRemainingMs / 60000)}m left)`}
+                           </button>
+                         )}
+
                          <div className="text-xs text-right text-gray-400 mt-1 border-t pt-2 flex justify-between items-center">
                            <span className="text-purple-500 font-bold opacity-0 group-hover/card:opacity-100 transition-opacity">Click to Inspect</span>
                            <span>{isIdle ? 'Waiting...' : `Last Active: ${new Date(display.lastUpdated).toLocaleTimeString()}`}</span>

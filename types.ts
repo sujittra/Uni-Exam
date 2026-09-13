@@ -36,7 +36,8 @@ export interface Question {
   options?: string[];
   correctOptionIndex?: number;
   // For Code
-  testCases?: TestCase[];
+  testCases?: TestCase[]; // Visible cases; for students, hidden ones are never included here
+  hiddenTestCaseCount?: number; // How many hidden cases exist (safe to show students; real data lives server-side)
   language?: CodeLanguage; // Programming language for code questions, defaults to 'java'
   allowFileUpload?: boolean; // Whether students can upload a code file instead of typing, defaults to true
   // For Short Answer
@@ -63,5 +64,6 @@ export interface StudentProgress {
   score: number;
   status: 'IDLE' | 'IN_PROGRESS' | 'COMPLETED';
   startedAt?: number; // Timestamp when student started the exam
+  autoSubmitted?: boolean; // True if the exam was auto-submitted because time ran out, rather than a manual submit
   lastUpdated: number;
 }

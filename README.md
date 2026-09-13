@@ -16,6 +16,7 @@ View your app in AI Studio: https://ai.studio/apps/drive/1BA3_dZ8EnzKw0jE67yjvFc
 1. Install dependencies:
    `npm install`
 2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
-3. Set `VITE_RAPIDAPI_KEY` in [.env.local](.env.local) to a RapidAPI key subscribed to the [Judge0 CE API](https://rapidapi.com/judge0-official/api/judge0-ce) (free tier available) — this powers the Java/Python code-grading runner
-4. Run the app:
+3. Run the app:
    `npm run dev`
+
+Code grading (the "ส่งคำตอบ" submit button) calls a Vercel serverless function ([api/judge.ts](api/judge.ts)) which forwards to the [Sphere Engine Compilers API](https://docs.sphere-engine.com/compilers/api/quickstart). Set `SPHERE_ENGINE_SUBDOMAIN` and `SPHERE_ENGINE_TOKEN` in the Vercel project's Environment Variables (never in `.env.local` — they must stay server-side). The "ทดสอบ" test button runs Python entirely in the browser via Pyodide and needs no configuration.

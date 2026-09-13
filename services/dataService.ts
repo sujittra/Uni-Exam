@@ -128,6 +128,7 @@ const mapQuestion = (q: any): Question => ({
   options: q.options,
   correctOptionIndex: q.correct_option_index,
   testCases: q.test_cases,
+  hiddenTestCaseCount: q.hidden_test_case_count || 0,
   language: q.language || 'java',
   allowFileUpload: q.allow_file_upload !== false,
   acceptedAnswers: q.accepted_answers
@@ -167,6 +168,7 @@ const mapProgress = (p: any, userName: string = ''): StudentProgress => ({
   score: p.score,
   status: p.status,
   startedAt: p.started_at ? new Date(p.started_at).getTime() : undefined,
+  autoSubmitted: !!p.auto_submitted,
   lastUpdated: new Date(p.updated_at).getTime()
 });
 
@@ -450,20 +452,50 @@ export const getExamsForStudent = async (student: User): Promise<Exam[]> => {
 };
 
 // UPDATED: Filter by teacherId
+// Hidden test cases live behind api/hidden-test-cases.ts (service_role only — RLS blocks
+// this client's anon key from reading them directly). The teacher editor needs the real
+// content to display/edit them, so merge them in here for the teacher-facing fetch only.
+const fetchHiddenTestCases = async (questionIds: string[]): Promise<Record<string, TestCase[]>> => {
+  if (questionIds.length === 0) return {};
+  try {
+    const res = await fetch(`/api/hidden-test-cases?questionIds=${questionIds.join(',')}`);
+    if (!res.ok) return {};
+    return await res.json();
+  } catch {
+    return {};
+  }
+};
+
+const mergeHiddenTestCases = async (exams: Exam[]): Promise<Exam[]> => {
+  const codeQuestionIds = exams.flatMap(e => e.questions)
+    .filter(q => q.type === QuestionType.JAVA_CODE)
+    .map(q => q.id);
+  const hiddenByQuestion = await fetchHiddenTestCases(codeQuestionIds);
+
+  return exams.map(e => ({
+    ...e,
+    questions: e.questions.map(q => {
+      const hidden = hiddenByQuestion[q.id];
+      if (!hidden || hidden.length === 0) return q;
+      return { ...q, testCases: [...(q.testCases || []), ...hidden.map(tc => ({ ...tc, hidden: true }))] };
+    })
+  }));
+};
+
 export const getExamsForTeacher = async (teacherId?: string): Promise<Exam[]> => {
   if (supabase) {
     let query = supabase.from('exams').select('*, questions(*)').order('created_at', { ascending: false });
-    
+
     // Filter by created_by if teacherId is provided
     if (teacherId) {
        query = query.eq('created_by', teacherId);
     }
-    
+
     const { data, error } = await query;
     if (error) return [];
-    return data.map(mapExam);
+    return mergeHiddenTestCases(data.map(mapExam));
   }
-  
+
   // Mock Data Filtering
   const mockExams = getMockExams();
   if (teacherId) {
@@ -496,6 +528,10 @@ export const saveExam = async (exam: Exam): Promise<Exam> => {
     }
     await supabase.from('questions').delete().eq('exam_id', savedExamId);
     if (exam.questions.length > 0) {
+      // Hidden test cases never go into questions.test_cases (that column is readable by
+      // anon/students) — only the visible ones do. Hidden ones are pushed separately below,
+      // after the questions are inserted and we have their new ids (questions are always
+      // fully deleted + reinserted here, so ids change on every save).
       const questionsPayload = exam.questions.map(q => ({
         exam_id: savedExamId,
         type: q.type,
@@ -504,13 +540,27 @@ export const saveExam = async (exam: Exam): Promise<Exam> => {
         score: q.score,
         options: q.options,
         correct_option_index: q.correctOptionIndex,
-        test_cases: q.testCases,
+        test_cases: q.testCases?.filter(tc => !tc.hidden),
         language: q.language,
         allow_file_upload: q.type === QuestionType.JAVA_CODE ? (q.allowFileUpload !== false) : undefined,
         accepted_answers: q.acceptedAnswers
       }));
-      const { error: qError } = await supabase.from('questions').insert(questionsPayload);
+      const { data: insertedQuestions, error: qError } = await supabase.from('questions').insert(questionsPayload).select();
       if (qError) throw qError;
+
+      // Push hidden test cases (if any) to their own RLS-protected table via the server
+      // function — insertedQuestions comes back in the same order as questionsPayload.
+      await Promise.all(exam.questions.map((q, idx) => {
+        const hiddenCases = q.testCases?.filter(tc => tc.hidden) || [];
+        if (hiddenCases.length === 0) return Promise.resolve();
+        const questionId = insertedQuestions?.[idx]?.id;
+        if (!questionId) return Promise.resolve();
+        return fetch('/api/hidden-test-cases', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ questionId, testCases: hiddenCases.map(tc => ({ input: tc.input, output: tc.output })) })
+        }).catch(() => {});
+      }));
     }
   } else {
     // Mock Save
@@ -590,25 +640,29 @@ export const submitStudentProgress = async (progress: StudentProgress): Promise<
         answers: progress.answers || {}, // Force object
         score: progress.score, // CRITICAL: Save the actual calculated score
         status: progress.status,
+        auto_submitted: !!progress.autoSubmitted,
         updated_at: new Date().toISOString()
       };
       if (progress.startedAt) {
         payload.started_at = new Date(progress.startedAt).toISOString();
       }
 
-      const { error } = await supabase.from('student_progress').upsert(payload, { onConflict: 'student_id, exam_id' });
-      
-      if (error) {
-        // FALLBACK: If column 'started_at' is missing (PGRST204), try sending without it
-        if (error.code === 'PGRST204' && payload.started_at) {
-             console.warn("Supabase schema mismatch (missing started_at). Retrying payload without it.");
-             const { started_at, ...fallbackPayload } = payload;
-             const { error: fallbackError } = await supabase.from('student_progress').upsert(fallbackPayload, { onConflict: 'student_id, exam_id' });
-             
-             if (!fallbackError) return { success: true };
-             return { success: false, error: `${fallbackError.code}: ${fallbackError.message}` };
-        }
+      let { error } = await supabase.from('student_progress').upsert(payload, { onConflict: 'student_id, exam_id' });
 
+      // FALLBACK: If a newer column (e.g. 'started_at', 'auto_submitted') is missing from an
+      // older/un-migrated database schema (PGRST204), retry without it.
+      let fallbackPayload = payload;
+      while (error && error.code === 'PGRST204') {
+          const missingColumn = /column '(\w+)'/.exec(error.message)?.[1];
+          if (!missingColumn || !(missingColumn in fallbackPayload)) break;
+          console.warn(`Supabase schema mismatch (missing ${missingColumn}). Retrying payload without it.`);
+          const { [missingColumn]: _omit, ...rest } = fallbackPayload;
+          fallbackPayload = rest;
+          const retry = await supabase.from('student_progress').upsert(fallbackPayload, { onConflict: 'student_id, exam_id' });
+          error = retry.error;
+      }
+
+      if (error) {
         // Detailed Error Logging
         console.error("SUPABASE UPLOAD ERROR:", error);
         return { success: false, error: `${error.code}: ${error.message} (${error.details || ''})` };
@@ -632,6 +686,26 @@ export const submitStudentProgress = async (progress: StudentProgress): Promise<
   }
   saveMockData(STORAGE_KEYS.PROGRESS, updatedStore);
   return { success: true };
+};
+
+// Teacher action: reopen a student's completed exam so they can resume editing.
+// Keeps their existing answers/score/startedAt — the exam UI computes remaining time
+// from startedAt, so this only has an effect while time is still left in the window.
+export const reopenStudentProgress = async (studentId: string, examId: string): Promise<void> => {
+  if (supabase) {
+    await supabase
+      .from('student_progress')
+      .update({ status: 'IN_PROGRESS', updated_at: new Date().toISOString() })
+      .eq('student_id', studentId)
+      .eq('exam_id', examId);
+    return;
+  }
+  const mockProgressStore = getMockProgress();
+  const idx = mockProgressStore.findIndex(p => p.studentId === studentId && p.examId === examId);
+  if (idx >= 0) {
+    mockProgressStore[idx] = { ...mockProgressStore[idx], status: 'IN_PROGRESS', lastUpdated: Date.now() };
+    saveMockData(STORAGE_KEYS.PROGRESS, mockProgressStore);
+  }
 };
 
 export const getLiveProgress = async (examId: string): Promise<StudentProgress[]> => {
@@ -729,133 +803,30 @@ export const getExamResults = async (examId: string): Promise<ExamResult[]> => {
 };
 
 // ==========================================
-// REAL REMOTE COMPILER (via Judge0 CE / RapidAPI)
+// REMOTE GRADING (via Vercel serverless function -> Sphere Engine)
 // ==========================================
-const JUDGE0_API_URL = "https://judge0-ce.p.rapidapi.com/submissions";
-const JUDGE0_HOST = "judge0-ce.p.rapidapi.com";
-// Set VITE_RAPIDAPI_KEY in .env.local (RapidAPI -> Judge0 CE -> subscribe to free tier)
-const RAPIDAPI_KEY = (import.meta as any).env?.VITE_RAPIDAPI_KEY || '';
-
-// Judge0 CE language IDs
-const LANGUAGE_IDS: Record<CodeLanguage, number> = {
-  java: 62,    // OpenJDK 13.0.1
-  python3: 71  // Python 3.8.1
-};
-
-export const compileCode = async (code: string, testCases: TestCase[], language: CodeLanguage = 'java'): Promise<{passed: boolean, output: string}> => {
+// The actual judge call (and its API token) lives server-side in api/judge.ts, which
+// also looks up this question's test cases itself (visible AND hidden) — the client
+// only ever sends the question id + code, never test case content, so hidden test data
+// never has to touch the student's browser at all.
+export const compileCode = async (questionId: string, code: string, language: CodeLanguage = 'java'): Promise<{passed: boolean, output: string}> => {
   if (!code.trim()) {
       return { passed: false, output: "Error: Code is empty." };
   }
 
-  if (!RAPIDAPI_KEY) {
-      return {
-          passed: false,
-          output: "System Error: Code runner is not configured. Set VITE_RAPIDAPI_KEY in .env.local (subscribe to the Judge0 CE API on RapidAPI to get a key)."
-      };
+  try {
+    const response = await fetch('/api/judge', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ questionId, code, language })
+    });
+
+    if (!response.ok) {
+      return { passed: false, output: `System Error: Judge endpoint returned ${response.status} ${response.statusText}` };
+    }
+
+    return await response.json();
+  } catch (error: any) {
+    return { passed: false, output: `System Error: ${error.message || error}` };
   }
-
-  const languageId = LANGUAGE_IDS[language] || LANGUAGE_IDS.java;
-
-  let finalOutputDetails = "";
-  let allPassed = true;
-
-  // Fix: Accept any type to avoid "unknown" assignment errors
-  const normalize = (str: any) => String(str || '').replace(/\s+/g, ' ').trim();
-
-  // Define return type explicitly
-  type RunResult =
-    | { success: false; output: string; passed?: undefined; details?: undefined }
-    | { success: true; passed: boolean; details: string; output?: undefined };
-
-  const runTestCase = async (input: string, expected: string, index: number, hidden: boolean = false): Promise<RunResult> => {
-      try {
-          const response = await fetch(`${JUDGE0_API_URL}?base64_encoded=false&wait=true`, {
-              method: 'POST',
-              headers: {
-                  'Content-Type': 'application/json',
-                  'X-RapidAPI-Key': RAPIDAPI_KEY,
-                  'X-RapidAPI-Host': JUDGE0_HOST
-              },
-              body: JSON.stringify({
-                  language_id: languageId,
-                  source_code: code,
-                  stdin: input
-              })
-          });
-
-          if (!response.ok) {
-              return { success: false, output: `System Error: Judge0 API returned ${response.status} ${response.statusText}` };
-          }
-
-          // Fix: Explicitly type result as any to avoid 'unknown' issues in strict mode
-          const result = await response.json() as any;
-          const statusId = result.status?.id;
-
-          // 6 = Compilation Error
-          if (statusId === 6) {
-              return {
-                  success: false,
-                  output: `[Compilation Error]\n${String(result.compile_output || '')}`
-              };
-          }
-
-          // 5 = Time Limit Exceeded
-          if (statusId === 5) {
-              return { success: false, output: "[Time Limit Exceeded]\nYour code took too long to run." };
-          }
-
-          // 7-12 = Runtime Errors (SIGSEGV, SIGXFSZ, SIGFPE, SIGABRT, NZEC, Other)
-          if (statusId >= 7 && statusId <= 12) {
-              return {
-                  success: false,
-                  output: `[Runtime Error]\n${String(result.stderr || result.message || '')}`
-              };
-          }
-
-          // Anything else unexpected (13 Internal Error, 14 Exec Format Error, etc.)
-          if (statusId !== 3) {
-              return {
-                  success: false,
-                  output: `[${result.status?.description || 'Unknown Error'}]\n${String(result.stderr || result.message || '')}`
-              };
-          }
-
-          const actualOutput = String(result.stdout || '').trim();
-
-          const normalizedExpected = normalize(expected);
-          const normalizedActual = normalize(actualOutput);
-          const passed = normalizedActual === normalizedExpected;
-
-          return {
-              success: true,
-              passed: passed,
-              details: hidden
-                  ? `Test Case ${index + 1}: [Hidden] (${passed ? 'PASS' : 'FAIL'})`
-                  : `Test Case ${index + 1}: Input [${input}] \n   -> Expected [${normalizedExpected}] \n   -> Actual   [${normalizedActual}] (${passed ? 'PASS' : 'FAIL'})`
-          };
-
-      } catch (error: any) {
-          return { success: false, output: `System Error: ${error.message || error}` };
-      }
-  };
-
-  finalOutputDetails += "Compiling and Running on Remote Server...\n\n";
-
-  for (let i = 0; i < testCases.length; i++) {
-      const tc = testCases[i];
-      const result = await runTestCase(tc.input, tc.output, i, !!tc.hidden);
-
-      if (!result.success) {
-          const errorOutput = tc.hidden
-              ? `Test Case ${i + 1}: [Hidden] (FAIL - error during execution)`
-              : (result.output || "Unknown Error");
-          finalOutputDetails += errorOutput + "\n";
-          return { passed: false, output: finalOutputDetails };
-      }
-
-      finalOutputDetails += result.details + "\n";
-      if (!result.passed) allPassed = false;
-  }
-
-  return { passed: allPassed, output: finalOutputDetails };
 };

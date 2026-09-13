@@ -35,11 +35,30 @@ create table public.questions (
   score int not null default 0,
   options text[], -- For MCQ: Array of choices
   correct_option_index int, -- For MCQ: Index of correct choice (0-3)
-  test_cases jsonb, -- For JAVA: JSON array [{"input": "...", "output": "..."}]
+  test_cases jsonb, -- For JAVA: JSON array of VISIBLE test cases only: [{"input": "...", "output": "..."}]
+  hidden_test_case_count int default 0, -- Denormalized count of hidden cases (safe to expose; real data lives in question_hidden_test_cases)
   language text check (language in ('java', 'python3')) default 'java', -- For JAVA (code) questions: programming language
   allow_file_upload boolean default true, -- For JAVA (code) questions: whether students may upload a code file instead of typing
   accepted_answers text[] -- For SHORT_ANSWER: Array of valid answers e.g. ['java', 'Java']
 );
+
+-- HIDDEN TEST CASES: Kept in a separate table (not the questions.test_cases column) so
+-- Row Level Security can fully block students/anon from ever reading them. Only the
+-- Vercel serverless functions (using the Supabase service_role key, which bypasses RLS)
+-- can read or write this table.
+create table public.question_hidden_test_cases (
+  id uuid default gen_random_uuid() primary key,
+  question_id uuid references public.questions(id) on delete cascade not null,
+  input text not null,
+  output text not null,
+  created_at timestamp with time zone default timezone('utc'::text, now()) not null
+);
+
+alter table public.question_hidden_test_cases enable row level security;
+-- Intentionally NO policies are added here for anon/authenticated: with RLS enabled and
+-- no permissive policy, every row is denied to those roles by default. Only requests
+-- authenticated with the service_role key (server-side only, never in client code) can
+-- read or write this table.
 
 -- STUDENT PROGRESS: Real-time tracking of exam attempts
 create table public.student_progress (
@@ -52,6 +71,7 @@ create table public.student_progress (
   score int default 0,
   status text check (status in ('IDLE', 'IN_PROGRESS', 'COMPLETED')) default 'IDLE',
   started_at timestamp with time zone, -- NEW: To track strict timing
+  auto_submitted boolean default false, -- True if submitted because the timer ran out, not a manual submit
   -- Ensure one active attempt per student per exam
   unique(student_id, exam_id)
 );
