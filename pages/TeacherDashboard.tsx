@@ -33,6 +33,9 @@ const getAnswerDisplay = (ans: any) => {
     return String(ans);
 };
 
+// Helper: Normalize a section name for case-insensitive comparison (e.g. "sec01" == "SEC01")
+const normSection = (s?: string) => (s || '').trim().toUpperCase();
+
 export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ user, onLogout }) => {
   const [activeTab, setActiveTab] = useState<'EXAMS' | 'STUDENTS' | 'MONITOR'>('EXAMS');
   const [exams, setExams] = useState<Exam[]>([]);
@@ -263,10 +266,10 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ user, onLogo
     const exam = exams.find(e => e.id === monitoringExamId);
     if (!exam) return [];
 
-    // 1. Filter students by assigned sections
-    const eligibleStudents = students.filter(s => 
-      exam.assignedSections.length === 0 || 
-      exam.assignedSections.includes(s.section || '')
+    // 1. Filter students by assigned sections (case-insensitive)
+    const eligibleStudents = students.filter(s =>
+      exam.assignedSections.length === 0 ||
+      exam.assignedSections.some(a => normSection(a) === normSection(s.section))
     );
 
     // 2. Merge with Live Data
@@ -307,7 +310,7 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ user, onLogo
         item.user.name.toLowerCase().includes(monitorSearch.toLowerCase()) ||
         item.user.studentId?.includes(monitorSearch);
       
-      const matchSection = monitorSectionFilter === 'ALL' || item.user.section === monitorSectionFilter;
+      const matchSection = monitorSectionFilter === 'ALL' || normSection(item.user.section) === normSection(monitorSectionFilter);
       
       return matchSearch && matchSection;
     });
@@ -330,8 +333,15 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ user, onLogo
   }, [monitoringExamId, students, liveData, monitorSearch, monitorSortBy, monitorSectionFilter, exams]);
 
   const uniqueSections = useMemo(() => {
-     const sections = new Set(students.map(s => s.section).filter(Boolean));
-     return Array.from(sections).sort();
+     // Dedupe case-insensitively (e.g. "sec01" / "SEC01" / "Sec01" count as one), keeping the first-seen casing
+     const seen = new Map<string, string>();
+     students.forEach(s => {
+        if (s.section) {
+           const key = normSection(s.section);
+           if (!seen.has(key)) seen.set(key, s.section!.trim());
+        }
+     });
+     return Array.from(seen.values()).sort((a, b) => a.localeCompare(b));
   }, [students]);
 
   // --- RENDER OVERALL STATS ---
@@ -499,7 +509,34 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ user, onLogo
                    </div>
                    <div>
                       <label className="text-sm font-medium text-gray-700">Assigned Sections</label>
-                      <input className="w-full p-2 border rounded" value={editingExam.assignedSections.join(', ')} onChange={e => setEditingExam({...editingExam, assignedSections: e.target.value.split(',').map(s => s.trim())})} placeholder="SEC01, SEC02"/>
+                      {uniqueSections.length === 0 ? (
+                         <p className="text-sm text-gray-400 mt-1">No sections found yet — import students in the Students tab first.</p>
+                      ) : (
+                         <div className="flex flex-wrap gap-2 mt-1">
+                            {uniqueSections.map(sec => {
+                               const isChecked = editingExam.assignedSections.some(a => normSection(a) === normSection(sec));
+                               return (
+                                  <label
+                                     key={sec}
+                                     className={`px-3 py-1.5 rounded-full border-2 text-sm cursor-pointer transition-colors select-none ${isChecked ? 'bg-purple-600 border-purple-600 text-white' : 'border-gray-200 text-gray-600 hover:border-purple-300'}`}
+                                  >
+                                     <input
+                                        type="checkbox"
+                                        className="hidden"
+                                        checked={isChecked}
+                                        onChange={() => {
+                                           const newSections = isChecked
+                                              ? editingExam.assignedSections.filter(a => normSection(a) !== normSection(sec))
+                                              : [...editingExam.assignedSections, sec];
+                                           setEditingExam({ ...editingExam, assignedSections: newSections });
+                                        }}
+                                     />
+                                     {sec}
+                                  </label>
+                               );
+                            })}
+                         </div>
+                      )}
                    </div>
                 </div>
               </Card>

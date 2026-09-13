@@ -433,15 +433,20 @@ export const uploadExamImage = async (file: File): Promise<string> => {
   });
 };
 
+// Case-insensitive section match (e.g. "sec01" / "SEC01" / "Sec01" are treated as the same section)
+const normSection = (s?: string) => (s || '').trim().toUpperCase();
+const isAssignedToSection = (assignedSections: string[], section?: string) =>
+  assignedSections.some(a => normSection(a) === normSection(section));
+
 export const getExamsForStudent = async (student: User): Promise<Exam[]> => {
   if (supabase) {
     const { data, error } = await supabase.from('exams').select('*, questions(*)').eq('is_active', true);
     if (error) return [];
     const allExams = data.map(mapExam);
-    return allExams.filter(e => e.assignedSections.includes(student.section || ''));
+    return allExams.filter(e => isAssignedToSection(e.assignedSections, student.section));
   }
   const mockExams = getMockExams();
-  return mockExams.filter(e => e.isActive && e.assignedSections.includes(student.section || ''));
+  return mockExams.filter(e => e.isActive && isAssignedToSection(e.assignedSections, student.section));
 };
 
 // UPDATED: Filter by teacherId
