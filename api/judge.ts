@@ -7,6 +7,10 @@
 // service_role key, which bypasses the RLS that blocks anon/authenticated from reading
 // question_hidden_test_cases) so hidden test data never has to pass through the student's
 // browser at all.
+//
+// Test cases are graded IN PARALLEL (not one-by-one) — each one is its own create+poll+
+// fetch round trip to Sphere Engine, and running them sequentially risked exceeding the
+// Vercel function's execution time limit with more than a couple of test cases.
 import { supabaseAdmin, isSupabaseAdminConfigured } from './_supabaseAdmin';
 
 const SPHERE_SUBDOMAIN = process.env.SPHERE_ENGINE_SUBDOMAIN;
@@ -25,6 +29,12 @@ interface TestCaseInput {
   hidden?: boolean;
 }
 
+interface GradeResult {
+  passed: boolean;
+  line: string;
+  fatal?: boolean; // compilation error — identical for every test case, only show once
+}
+
 const normalize = (s: any) => String(s || '').replace(/\s+/g, ' ').trim();
 
 async function createSubmission(source: string, compilerId: number, input: string): Promise<number> {
@@ -38,14 +48,14 @@ async function createSubmission(source: string, compilerId: number, input: strin
   return data.id;
 }
 
-async function pollSubmission(id: number, maxWaitMs = 20000): Promise<any> {
+async function pollSubmission(id: number, maxWaitMs = 25000): Promise<any> {
   const start = Date.now();
   while (Date.now() - start < maxWaitMs) {
     const res = await fetch(`${BASE_URL}/submissions/${id}?access_token=${SPHERE_TOKEN}`);
     const data: any = await res.json();
     if (!res.ok) throw new Error(data?.message || `Sphere Engine poll error ${res.status}`);
     if (!data.executing) return data;
-    await new Promise((r) => setTimeout(r, 700));
+    await new Promise((r) => setTimeout(r, 500));
   }
   throw new Error('Timed out waiting for the judge to finish.');
 }
@@ -56,118 +66,138 @@ async function fetchStream(id: number, stream: 'output' | 'error' | 'cmpinfo'): 
   return await res.text();
 }
 
-export default async function handler(req: any, res: any) {
-  if (req.method !== 'POST') {
-    res.status(405).json({ passed: false, output: 'Method not allowed' });
-    return;
-  }
-
-  if (!SPHERE_SUBDOMAIN || !SPHERE_TOKEN) {
-    res.status(200).json({
-      passed: false,
-      output: 'System Error: Judge is not configured. Set SPHERE_ENGINE_SUBDOMAIN and SPHERE_ENGINE_TOKEN in the Vercel project environment variables.',
-    });
-    return;
-  }
-  if (!isSupabaseAdminConfigured()) {
-    res.status(200).json({
-      passed: false,
-      output: 'System Error: Server is not configured. Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY in the Vercel project environment variables.',
-    });
-    return;
-  }
-
-  const { questionId, code, language } = (req.body || {}) as {
-    questionId?: string;
-    code?: string;
-    language?: string;
-  };
-
-  if (!code || !String(code).trim()) {
-    res.status(200).json({ passed: false, output: 'Error: Code is empty.' });
-    return;
-  }
-  if (!questionId) {
-    res.status(200).json({ passed: false, output: 'System Error: Missing questionId.' });
-    return;
-  }
-
-  const supabase = supabaseAdmin!;
-  const { data: question, error: qError } = await supabase
-    .from('questions')
-    .select('test_cases')
-    .eq('id', questionId)
-    .single();
-  if (qError || !question) {
-    res.status(200).json({ passed: false, output: `System Error: Could not load question (${qError?.message || 'not found'}).` });
-    return;
-  }
-  const { data: hiddenRows, error: hError } = await supabase
-    .from('question_hidden_test_cases')
-    .select('input, output')
-    .eq('question_id', questionId);
-  if (hError) {
-    res.status(200).json({ passed: false, output: `System Error: Could not load hidden test cases (${hError.message}).` });
-    return;
-  }
-
-  const testCases: TestCaseInput[] = [
-    ...((question.test_cases || []) as TestCaseInput[]).map((tc) => ({ ...tc, hidden: false })),
-    ...(hiddenRows || []).map((tc: any) => ({ input: tc.input, output: tc.output, hidden: true })),
-  ];
-
-  const compilerId = COMPILER_IDS[language || 'java'] || COMPILER_IDS.java;
-  let finalOutput = 'Compiling and running on remote judge...\n\n';
-  let allPassed = true;
-
+async function gradeTestCase(code: string, compilerId: number, tc: TestCaseInput, index: number): Promise<GradeResult> {
   try {
-    for (let i = 0; i < testCases.length; i++) {
-      const tc = testCases[i];
-      const id = await createSubmission(code, compilerId, tc.input);
-      const result = await pollSubmission(id);
-      const statusCode = result.result?.status?.code;
+    const id = await createSubmission(code, compilerId, tc.input);
+    const result = await pollSubmission(id);
+    const statusCode = result.result?.status?.code;
 
-      // Status codes: https://docs.sphere-engine.com/compilers/submission-status
-      if (statusCode === 11) {
-        const cmpinfo = await fetchStream(id, 'cmpinfo');
-        finalOutput += `[Compilation Error]\n${cmpinfo}\n`;
-        res.status(200).json({ passed: false, output: finalOutput });
-        return;
-      }
-      if (statusCode === 12 || statusCode === 19) {
-        const error = await fetchStream(id, 'error');
-        finalOutput += tc.hidden
-          ? `Test Case ${i + 1}: [Hidden] (FAIL - runtime error)\n`
-          : `[Runtime Error]\n${error}\n`;
-        res.status(200).json({ passed: false, output: finalOutput });
-        return;
-      }
-      if (statusCode === 13) {
-        finalOutput += tc.hidden
-          ? `Test Case ${i + 1}: [Hidden] (FAIL - time limit exceeded)\n`
-          : `[Time Limit Exceeded]\n`;
-        res.status(200).json({ passed: false, output: finalOutput });
-        return;
-      }
-      if (statusCode !== 15) {
-        finalOutput += `[Judge Error] status code ${statusCode} (${result.result?.status?.name || 'unknown'})\n`;
-        res.status(200).json({ passed: false, output: finalOutput });
-        return;
-      }
-
-      const stdout = await fetchStream(id, 'output');
-      const normalizedExpected = normalize(tc.output);
-      const normalizedActual = normalize(stdout);
-      const passed = normalizedActual === normalizedExpected;
-      if (!passed) allPassed = false;
-
-      finalOutput += tc.hidden
-        ? `Test Case ${i + 1}: [Hidden] (${passed ? 'PASS' : 'FAIL'})\n`
-        : `Test Case ${i + 1}: Input [${tc.input}] \n   -> Expected [${normalizedExpected}] \n   -> Actual   [${normalizedActual}] (${passed ? 'PASS' : 'FAIL'})\n`;
+    // Status codes: https://docs.sphere-engine.com/compilers/submission-status
+    if (statusCode === 11) {
+      const cmpinfo = await fetchStream(id, 'cmpinfo');
+      return { passed: false, fatal: true, line: `[Compilation Error]\n${cmpinfo}` };
+    }
+    if (statusCode === 12 || statusCode === 19) {
+      const error = await fetchStream(id, 'error');
+      return {
+        passed: false,
+        line: tc.hidden
+          ? `Test Case ${index + 1}: [Hidden] (FAIL - runtime error)`
+          : `[Runtime Error] (Test Case ${index + 1})\n${error}`,
+      };
+    }
+    if (statusCode === 13) {
+      return {
+        passed: false,
+        line: tc.hidden ? `Test Case ${index + 1}: [Hidden] (FAIL - time limit exceeded)` : `[Time Limit Exceeded] (Test Case ${index + 1})`,
+      };
+    }
+    if (statusCode !== 15) {
+      return { passed: false, line: `[Judge Error] Test Case ${index + 1}: status code ${statusCode} (${result.result?.status?.name || 'unknown'})` };
     }
 
-    res.status(200).json({ passed: allPassed, output: finalOutput });
+    const stdout = await fetchStream(id, 'output');
+    const normalizedExpected = normalize(tc.output);
+    const normalizedActual = normalize(stdout);
+    const passed = normalizedActual === normalizedExpected;
+
+    return {
+      passed,
+      line: tc.hidden
+        ? `Test Case ${index + 1}: [Hidden] (${passed ? 'PASS' : 'FAIL'})`
+        : `Test Case ${index + 1}: Input [${tc.input}] \n   -> Expected [${normalizedExpected}] \n   -> Actual   [${normalizedActual}] (${passed ? 'PASS' : 'FAIL'})`,
+    };
   } catch (e: any) {
-    res.status(200).json({ passed: false, output: `System Error: ${e.message || e}` });
+    return { passed: false, line: `[System Error] Test Case ${index + 1}: ${e?.message || e}` };
+  }
+}
+
+export default async function handler(req: any, res: any) {
+  try {
+    if (req.method !== 'POST') {
+      res.status(405).json({ passed: false, output: 'Method not allowed' });
+      return;
+    }
+
+    if (!SPHERE_SUBDOMAIN || !SPHERE_TOKEN) {
+      res.status(200).json({
+        passed: false,
+        output: 'System Error: Judge is not configured. Set SPHERE_ENGINE_SUBDOMAIN and SPHERE_ENGINE_TOKEN in the Vercel project environment variables.',
+      });
+      return;
+    }
+    if (!isSupabaseAdminConfigured()) {
+      res.status(200).json({
+        passed: false,
+        output: 'System Error: Server is not configured. Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY in the Vercel project environment variables.',
+      });
+      return;
+    }
+
+    const { questionId, code, language } = (req.body || {}) as {
+      questionId?: string;
+      code?: string;
+      language?: string;
+    };
+
+    if (!code || !String(code).trim()) {
+      res.status(200).json({ passed: false, output: 'Error: Code is empty.' });
+      return;
+    }
+    if (!questionId) {
+      res.status(200).json({ passed: false, output: 'System Error: Missing questionId.' });
+      return;
+    }
+
+    const supabase = supabaseAdmin!;
+    const { data: question, error: qError } = await supabase
+      .from('questions')
+      .select('test_cases')
+      .eq('id', questionId)
+      .single();
+    if (qError || !question) {
+      res.status(200).json({ passed: false, output: `System Error: Could not load question (${qError?.message || 'not found'}).` });
+      return;
+    }
+    const { data: hiddenRows, error: hError } = await supabase
+      .from('question_hidden_test_cases')
+      .select('input, output')
+      .eq('question_id', questionId);
+    if (hError) {
+      res.status(200).json({ passed: false, output: `System Error: Could not load hidden test cases (${hError.message}).` });
+      return;
+    }
+
+    const testCases: TestCaseInput[] = [
+      ...((question.test_cases || []) as TestCaseInput[]).map((tc) => ({ ...tc, hidden: false })),
+      ...(hiddenRows || []).map((tc: any) => ({ input: tc.input, output: tc.output, hidden: true })),
+    ];
+
+    if (testCases.length === 0) {
+      res.status(200).json({ passed: false, output: 'This question has no test cases configured.' });
+      return;
+    }
+
+    const compilerId = COMPILER_IDS[language || 'java'] || COMPILER_IDS.java;
+
+    const results = await Promise.all(testCases.map((tc, i) => gradeTestCase(code, compilerId, tc, i)));
+
+    const fatal = results.find((r) => r.fatal);
+    if (fatal) {
+      res.status(200).json({ passed: false, output: `Compiling and running on remote judge...\n\n${fatal.line}\n` });
+      return;
+    }
+
+    const allPassed = results.every((r) => r.passed);
+    const output = `Compiling and running on remote judge...\n\n${results.map((r) => r.line).join('\n')}\n`;
+    res.status(200).json({ passed: allPassed, output });
+  } catch (e: any) {
+    // Last-resort safety net so an unexpected exception never surfaces as a raw 500 —
+    // the student just sees a readable error in the console instead.
+    try {
+      res.status(200).json({ passed: false, output: `System Error: ${e?.message || e}` });
+    } catch {
+      // response already sent; nothing more we can do
+    }
   }
 }
