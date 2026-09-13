@@ -4,7 +4,10 @@
 // Files prefixed with "_" are not treated as routes by Vercel.
 import { createClient } from '@supabase/supabase-js';
 
-const SUPABASE_URL = process.env.SUPABASE_URL || '';
+// Vercel's Supabase integration names the URL var NEXT_PUBLIC_SUPABASE_URL (it also
+// exposes it to the client under that name) — fall back to that if a plain
+// SUPABASE_URL isn't set, so this works with either naming.
+const SUPABASE_URL = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || '';
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
 
 export const supabaseAdmin = (SUPABASE_URL && SUPABASE_SERVICE_ROLE_KEY)
