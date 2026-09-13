@@ -5,7 +5,7 @@
 //
 // GET  ?questionIds=id1,id2,...   -> { [questionId]: {input, output}[] }   (teacher editor load)
 // POST { questionId, testCases }  -> replaces all hidden test cases for that question
-import { pgSelect, pgInsert, pgDelete, pgUpdate, isSupabaseAdminConfigured } from './_supabaseAdmin';
+import { pgSelect, pgInsert, pgDelete, pgUpdate, isSupabaseAdminConfigured } from './_supabaseAdmin.js';
 
 export default async function handler(req: any, res: any) {
   try {

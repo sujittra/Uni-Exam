@@ -11,7 +11,7 @@
 // Test cases are graded IN PARALLEL (not one-by-one) — each one is its own create+poll+
 // fetch round trip to Sphere Engine, and running them sequentially risked exceeding the
 // Vercel function's execution time limit with more than a couple of test cases.
-import { pgSelect, isSupabaseAdminConfigured } from './_supabaseAdmin';
+import { pgSelect, isSupabaseAdminConfigured } from './_supabaseAdmin.js';
 
 const SPHERE_SUBDOMAIN = process.env.SPHERE_ENGINE_SUBDOMAIN;
 const SPHERE_TOKEN = process.env.SPHERE_ENGINE_TOKEN;
