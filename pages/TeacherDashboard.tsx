@@ -33,6 +33,25 @@ const getAnswerDisplay = (ans: any) => {
     return String(ans);
 };
 
+// Helper: Whether an answer earns points for a question (mirrors dataService.calculateScore)
+const isAnswerCorrect = (q: Question, ans: any): boolean => {
+    if (ans === undefined || ans === null || ans === '') return false;
+    if (q.type === QuestionType.MULTIPLE_CHOICE) {
+        return String(ans) === String(q.correctOptionIndex);
+    }
+    if (q.type === QuestionType.SHORT_ANSWER) {
+        const studentAns = normalizeAnswerText(ans);
+        return q.acceptedAnswers?.some(a => normalizeAnswerText(a) === studentAns) || false;
+    }
+    if (q.type === QuestionType.JAVA_CODE) {
+        if (typeof ans === 'object' && ans.passed === true) return true;
+        if (typeof ans === 'object' && ans.code && String(ans.code).length > 20) return true;
+        if (typeof ans === 'string' && ans.length > 20) return true;
+        return false;
+    }
+    return false;
+};
+
 // Helper: Normalize a section name for case-insensitive comparison (e.g. "sec01" == "SEC01")
 const normSection = (s?: string) => (s || '').trim().toUpperCase();
 
@@ -460,11 +479,14 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ user, onLogo
                     {progress ? (
                         exam.questions.map((q, idx) => {
                             const ans = progress.answers[q.id];
+                            const correct = isAnswerCorrect(q, ans);
                             return (
                                 <div key={q.id} className="border-b pb-4 last:border-0">
                                     <div className="flex justify-between mb-2">
                                         <span className="font-bold text-gray-700 text-sm">Q{idx+1}: {q.text}</span>
-                                        <span className="text-xs text-gray-400 bg-gray-100 px-2 rounded-full h-fit">{q.score} pts</span>
+                                        <span className={`text-xs font-bold px-2 py-0.5 rounded-full h-fit ${correct ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-600'}`}>
+                                           {correct ? q.score : 0} / {q.score} pts
+                                        </span>
                                     </div>
                                     <div className="bg-gray-50 p-3 rounded-lg text-sm font-mono whitespace-pre-wrap border border-gray-200">
                                         {ans ? getAnswerDisplay(ans) : <span className="text-gray-400 italic">No answer provided</span>}
