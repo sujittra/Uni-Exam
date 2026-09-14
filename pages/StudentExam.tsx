@@ -310,7 +310,7 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
     setIsTesting(true);
     setCodeOutput('Starting Python in your browser...');
 
-    const result = await testPythonCode(code, visibleTestCases);
+    const result = await testPythonCode(code, visibleTestCases, q.inputMode || 'stdin');
     setCodeOutput(result.output);
     setIsTesting(false);
   };
@@ -460,10 +460,16 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
                            {((q.testCases && q.testCases.length > 0) || (q.hiddenTestCaseCount || 0) > 0) && (
                               <div className="bg-gray-50 border border-gray-200 rounded-xl p-3 space-y-2">
                                  <p className="text-xs font-bold text-gray-500 uppercase">Test Cases</p>
+                                 {q.inputMode === 'function' && (
+                                    <div>
+                                       <p className="text-xs text-gray-600">เขียนเฉพาะฟังก์ชัน ระบบจะเรียกฟังก์ชันของคุณตามที่แสดงด้านล่างแล้วเทียบกับผลลัพธ์ที่คาดหวัง (จะ return ค่า หรือ print ออกมาก็ได้)</p>
+                                       <p className="text-xs text-gray-400">Write the function only — we call it as shown below and compare the result. Returning the value or printing it both work.</p>
+                                    </div>
+                                 )}
                                  <div className="space-y-1.5">
                                     {q.testCases?.map((tc, tcIdx) => (
                                        <div key={tcIdx} className="grid grid-cols-2 gap-2 text-xs font-mono">
-                                          <div className="bg-white border rounded px-2 py-1 truncate"><span className="text-gray-400">Input: </span>{tc.input}</div>
+                                          <div className="bg-white border rounded px-2 py-1 truncate"><span className="text-gray-400">{q.inputMode === 'function' ? 'Call: ' : 'Input: '}</span>{tc.input}</div>
                                           <div className="bg-white border rounded px-2 py-1 truncate"><span className="text-gray-400">Output: </span>{tc.output}</div>
                                        </div>
                                     ))}

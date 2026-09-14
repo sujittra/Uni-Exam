@@ -12,6 +12,7 @@
 // fetch round trip to Sphere Engine, and running them sequentially risked exceeding the
 // Vercel function's execution time limit with more than a couple of test cases.
 import { pgSelect, isSupabaseAdminConfigured } from './_supabaseAdmin.js';
+import { buildFunctionCallSource, describeEmptyCall } from './_pyHarness.js';
 
 const SPHERE_SUBDOMAIN = process.env.SPHERE_ENGINE_SUBDOMAIN;
 const SPHERE_TOKEN = process.env.SPHERE_ENGINE_TOKEN;
@@ -66,9 +67,21 @@ async function fetchStream(id: number, stream: 'output' | 'error' | 'cmpinfo'): 
   return await res.text();
 }
 
-async function gradeTestCase(code: string, compilerId: number, tc: TestCaseInput, index: number): Promise<GradeResult> {
+async function gradeTestCase(
+  code: string,
+  compilerId: number,
+  tc: TestCaseInput,
+  index: number,
+  functionMode: boolean
+): Promise<GradeResult> {
   try {
-    const id = await createSubmission(code, compilerId, tc.input);
+    if (functionMode && !String(tc.input || '').trim()) {
+      return { passed: false, line: describeEmptyCall(index) };
+    }
+    // In 'function' mode the test case input is a call expression compiled into the source
+    // instead of being piped to stdin, so the program gets no stdin at all.
+    const source = functionMode ? buildFunctionCallSource(code, tc.input) : code;
+    const id = await createSubmission(source, compilerId, functionMode ? '' : tc.input);
     const result = await pollSubmission(id);
     const statusCode = result.result?.status?.code;
 
@@ -105,7 +118,7 @@ async function gradeTestCase(code: string, compilerId: number, tc: TestCaseInput
       passed,
       line: tc.hidden
         ? `Test Case ${index + 1}: [Hidden] (${passed ? 'PASS' : 'FAIL'})`
-        : `Test Case ${index + 1}: Input [${tc.input}] \n   -> Expected [${normalizedExpected}] \n   -> Actual   [${normalizedActual}] (${passed ? 'PASS' : 'FAIL'})`,
+        : `Test Case ${index + 1}: ${functionMode ? 'Call' : 'Input'} [${tc.input}] \n   -> Expected [${normalizedExpected}] \n   -> Actual   [${normalizedActual}] (${passed ? 'PASS' : 'FAIL'})`,
     };
   } catch (e: any) {
     return { passed: false, line: `[System Error] Test Case ${index + 1}: ${e?.message || e}` };
@@ -151,7 +164,7 @@ export default async function handler(req: any, res: any) {
 
     const { data: questions, error: qError } = await pgSelect<any[]>(
       'questions',
-      `id=eq.${questionId}&select=test_cases`
+      `id=eq.${questionId}&select=test_cases,input_mode`
     );
     const question = questions?.[0];
     if (qError || !question) {
@@ -178,8 +191,11 @@ export default async function handler(req: any, res: any) {
     }
 
     const compilerId = COMPILER_IDS[language || 'java'] || COMPILER_IDS.java;
+    // 'function' mode compiles the call expression into the source, which only the Python
+    // harness knows how to build — any other language falls back to stdin.
+    const functionMode = question.input_mode === 'function' && language === 'python3';
 
-    const results = await Promise.all(testCases.map((tc, i) => gradeTestCase(code, compilerId, tc, i)));
+    const results = await Promise.all(testCases.map((tc, i) => gradeTestCase(code, compilerId, tc, i, functionMode)));
 
     const fatal = results.find((r) => r.fatal);
     if (fatal) {

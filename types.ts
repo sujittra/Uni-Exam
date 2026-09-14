@@ -9,6 +9,7 @@ export interface User {
   role: UserRole;
   studentId?: string; // For students
   section?: string; // For students
+  major?: string; // For students: their major/programme (สาขา)
   createdBy?: string; // New: Track which teacher imported this student
 }
 
@@ -19,6 +20,12 @@ export enum QuestionType {
 }
 
 export type CodeLanguage = 'java' | 'python3';
+
+// How a code question feeds each test case to the student's program.
+//   'stdin'    — the test case's input is piped to standard input (original behaviour)
+//   'function' — the test case's input is a call expression, e.g. `rectangle_area(4, 5)`,
+//                evaluated after the student's code. Python only.
+export type CodeInputMode = 'stdin' | 'function';
 
 export interface TestCase {
   input: string;
@@ -40,6 +47,7 @@ export interface Question {
   hiddenTestCaseCount?: number; // How many hidden cases exist (safe to show students; real data lives server-side)
   language?: CodeLanguage; // Programming language for code questions, defaults to 'java'
   allowFileUpload?: boolean; // Whether students can upload a code file instead of typing, defaults to true
+  inputMode?: CodeInputMode; // How test case inputs are fed to the program, defaults to 'stdin'
   // For Short Answer
   acceptedAnswers?: string[];
 }

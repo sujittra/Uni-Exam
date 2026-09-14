@@ -11,6 +11,7 @@ create table public.users (
   role text not null check (role in ('TEACHER', 'STUDENT')),
   student_id text unique, -- Used for login (e.g., '64001'), null for teachers
   section text, -- Group/Class section (e.g., 'SEC01'), null for teachers
+  major text, -- Student's major/programme (e.g., 'วิศวกรรมซอฟต์แวร์'), null for teachers
   password text -- Added for Teacher login (Simple text storage for this prototype)
 );
 
@@ -39,6 +40,11 @@ create table public.questions (
   hidden_test_case_count int default 0, -- Denormalized count of hidden cases (safe to expose; real data lives in question_hidden_test_cases)
   language text check (language in ('java', 'python3')) default 'java', -- For JAVA (code) questions: programming language
   allow_file_upload boolean default true, -- For JAVA (code) questions: whether students may upload a code file instead of typing
+  -- How a code question feeds each test case to the student's program:
+  --   'stdin'    -> test_cases.input is piped to standard input (original behaviour)
+  --   'function' -> test_cases.input is a call expression, e.g. rectangle_area(4, 5),
+  --                 evaluated after the student's code (Python only)
+  input_mode text check (input_mode in ('stdin', 'function')) default 'stdin',
   accepted_answers text[] -- For SHORT_ANSWER: Array of valid answers e.g. ['java', 'Java']
 );
 
