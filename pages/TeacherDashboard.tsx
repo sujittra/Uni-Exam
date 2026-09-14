@@ -46,10 +46,9 @@ const isAnswerCorrect = (q: Question, ans: any): boolean => {
         return q.acceptedAnswers?.some(a => normalizeAnswerText(a) === studentAns) || false;
     }
     if (q.type === QuestionType.JAVA_CODE) {
-        if (typeof ans === 'object' && ans.passed === true) return true;
-        if (typeof ans === 'object' && ans.code && String(ans.code).length > 20) return true;
-        if (typeof ans === 'string' && ans.length > 20) return true;
-        return false;
+        // Passing every test case is the only thing that earns the points — see the note
+        // in dataService.calculateScore, which this mirrors.
+        return typeof ans === 'object' && ans.passed === true;
     }
     return false;
 };
@@ -663,12 +662,8 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ user, onLogo
                      const studentAns = normalizeAnswerText(ans);
                      isCorrect = q.acceptedAnswers?.some(a => normalizeAnswerText(a) === studentAns) || false;
                    } else {
-                     // JAVA GRADING (Updated)
-                     if (typeof ans === 'object' && ans.passed === true) {
-                        isCorrect = true;
-                     } else if (typeof ans === 'string' && ans.length > 20) {
-                        isCorrect = true; // Fallback
-                     }
+                     // Code questions: only a passing judge run counts as correct.
+                     isCorrect = typeof ans === 'object' && ans.passed === true;
                    }
                  }
                  
@@ -798,9 +793,16 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ user, onLogo
                                           <span className="text-gray-500 font-bold">
                                              {q.language === 'python3' ? '🐍 Python 3' : '☕ Java'}
                                           </span>
-                                          <span className={`${ans.passed ? 'text-green-600' : 'text-red-500'} font-bold`}>
-                                             Compiler: {ans.passed ? 'PASSED' : 'FAILED'}
-                                          </span>
+                                          {/* An answer with no judge output was never submitted
+                                              for grading — "FAILED" would read as if their code
+                                              had been run and rejected, which it never was. */}
+                                          {ans.passed ? (
+                                             <span className="text-green-600 font-bold">Compiler: PASSED</span>
+                                          ) : ans.output ? (
+                                             <span className="text-red-500 font-bold">Compiler: FAILED</span>
+                                          ) : (
+                                             <span className="text-amber-600 font-bold">ยังไม่ได้กด "ส่งคำตอบ" — ไม่ได้ส่งตรวจ</span>
+                                          )}
                                        </div>
                                     )}
                                 </div>
