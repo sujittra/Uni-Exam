@@ -24,6 +24,9 @@ create table public.exams (
   duration_minutes int not null default 60,
   is_active boolean default false,
   assigned_sections text[] default '{}'::text[], -- Array of strings e.g. ['SEC01', 'SEC02']
+  -- Optional second filter, ANDed with assigned_sections: a student must be in one of the
+  -- listed sections AND one of the listed majors. Empty = no major constraint.
+  assigned_majors text[] default '{}'::text[], -- e.g. ['วิศวกรรมซอฟต์แวร์']
   -- Per-student randomisation. The order is derived from the student's id, so it is
   -- stable across refreshes and resumes; answers are stored against question ids (and,
   -- for MCQ, the ORIGINAL option index), so grading is unaffected by either shuffle.

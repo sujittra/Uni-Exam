@@ -118,6 +118,7 @@ const mapExam = (e: any): Exam => ({
   shuffleQuestions: !!e.shuffle_questions,
   shuffleOptions: !!e.shuffle_options,
   assignedSections: e.assigned_sections || [],
+  assignedMajors: e.assigned_majors || [],
   createdBy: e.created_by, // Map DB column
   questions: (e.questions || []).map(mapQuestion).sort((a: Question, b: Question) => a.text.localeCompare(b.text))
 });
@@ -498,15 +499,25 @@ const normSection = (s?: string) => (s || '').trim().toUpperCase();
 const isAssignedToSection = (assignedSections: string[], section?: string) =>
   assignedSections.some(a => normSection(a) === normSection(section));
 
+// Majors are ANDed with sections and are optional: an exam with no majors listed is open to
+// every major, so an empty list must never exclude anyone.
+const normMajor = (m?: string) => (m || '').trim().toLowerCase();
+export const isAssignedToStudent = (exam: Exam, student: User) => {
+  if (!isAssignedToSection(exam.assignedSections, student.section)) return false;
+  const majors = exam.assignedMajors || [];
+  if (majors.length === 0) return true;
+  return majors.some(m => normMajor(m) === normMajor(student.major));
+};
+
 export const getExamsForStudent = async (student: User): Promise<Exam[]> => {
   if (supabase) {
     const { data, error } = await supabase.from('exams').select('*, questions(*)').eq('is_active', true);
     if (error) return [];
     const allExams = data.map(mapExam);
-    return allExams.filter(e => isAssignedToSection(e.assignedSections, student.section));
+    return allExams.filter(e => isAssignedToStudent(e, student));
   }
   const mockExams = getMockExams();
-  return mockExams.filter(e => e.isActive && isAssignedToSection(e.assignedSections, student.section));
+  return mockExams.filter(e => e.isActive && isAssignedToStudent(e, student));
 };
 
 // UPDATED: Filter by teacherId
@@ -575,6 +586,7 @@ export const saveExam = async (exam: Exam): Promise<Exam> => {
       shuffle_questions: !!exam.shuffleQuestions,
       shuffle_options: !!exam.shuffleOptions,
       assigned_sections: exam.assignedSections,
+      assigned_majors: exam.assignedMajors || [],
       created_by: exam.createdBy // Save ownership
     };
     

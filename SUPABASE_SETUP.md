@@ -186,6 +186,16 @@ ADD COLUMN IF NOT EXISTS capture_attempt_count int default 0;
 NOTIFY pgrst, 'reload schema';
 ```
 
+### เพิ่งอัปเดต: assign ข้อสอบตามสาขาได้ (นอกเหนือจาก Section)
+```sql
+-- สาขาที่ข้อสอบชุดนี้ถูก assign ให้ ว่างไว้ = ไม่กรองด้วยสาขา
+-- เงื่อนไขเป็นแบบ AND: นักศึกษาต้องอยู่ใน Section ที่เลือก และ อยู่ในสาขาที่เลือก
+ALTER TABLE public.exams
+ADD COLUMN IF NOT EXISTS assigned_majors text[] default '{}'::text[];
+
+NOTIFY pgrst, 'reload schema';
+```
+
 ## หมายเหตุ
 - ระบบ Dashboard ใช้อาศัยฟีเจอร์ **Realtime** ซึ่งสคริปต์ SQL ได้เปิดใช้งานให้แล้วในบรรทัด `alter publication supabase_realtime...`
 - ระบบ Login ปัจจุบันออกแบบมาให้ใช้ `student_id` ในตาราง `users` ในการตรวจสอบสิทธิ์แบบง่าย (เพื่อให้ตรงกับ requirement นำเข้า Excel) โดยไม่ต้องใช้ Supabase Auth (Email/Password) ที่ซับซ้อนเกินไปสำหรับเฟสแรก
