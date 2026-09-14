@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { User, Exam, Question, QuestionType, StudentProgress, CodeLanguage, CodeInputMode } from '../types';
-import { saveExam, deleteExam, getExamsForTeacher, getLiveProgress, importStudents, updateExamStatus, getExamResults, uploadExamImage, getStudents, recalculateExamScores, reopenStudentProgress, updateStudent, deleteStudents, assignMajorToStudents, StudentImportRow } from '../services/dataService';
+import { saveExam, deleteExam, getExamsForTeacher, getLiveProgress, importStudents, updateExamStatus, getExamResults, uploadExamImage, getStudents, recalculateExamScores, reopenStudentProgress, updateStudent, deleteStudents, assignMajorToStudents, isAssignedToStudent, StudentImportRow } from '../services/dataService';
+import { examForStudent } from '../services/shuffle';
 import { Card } from '../components/Card';
 import { Button } from '../components/Button';
 
@@ -117,6 +118,9 @@ const isFunctionMode = (q: Question) => q.language === 'python3' && q.inputMode 
 
 // Helper: Normalize a section name for case-insensitive comparison (e.g. "sec01" == "SEC01")
 const normSection = (s?: string) => (s || '').trim().toUpperCase();
+
+// Same idea for majors, which are free text typed by whoever imported the roster.
+const normMajor = (s?: string) => (s || '').trim().toLowerCase();
 
 export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ user, onLogout }) => {
   const [activeTab, setActiveTab] = useState<'EXAMS' | 'STUDENTS' | 'MONITOR'>('EXAMS');
@@ -492,8 +496,9 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ user, onLogo
 
     // 1. Filter students by assigned sections (case-insensitive)
     const eligibleStudents = students.filter(s =>
-      exam.assignedSections.length === 0 ||
-      exam.assignedSections.some(a => normSection(a) === normSection(s.section))
+      exam.assignedSections.length === 0
+        ? true
+        : isAssignedToStudent(exam, s)
     );
 
     // 2. Merge with Live Data
@@ -555,6 +560,25 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ user, onLogo
     });
 
   }, [monitoringExamId, students, liveData, monitorSearch, monitorSortBy, monitorSectionFilter, exams]);
+
+  // Majors present in the roster, for the exam editor's major picker.
+  const uniqueMajors = useMemo(() => {
+     const seen = new Map<string, string>();
+     students.forEach(s => {
+        if (s.major) {
+           const key = normMajor(s.major);
+           if (!seen.has(key)) seen.set(key, s.major!.trim());
+        }
+     });
+     return Array.from(seen.values()).sort((a, b) => a.localeCompare(b));
+  }, [students]);
+
+  // Live count of who would actually get this exam under the current section + major
+  // selection — makes the AND between the two pickers concrete before saving.
+  const eligibleCount = useMemo(
+     () => (editingExam ? students.filter(s => isAssignedToStudent(editingExam, s)).length : 0),
+     [editingExam, students]
+  );
 
   const uniqueSections = useMemo(() => {
      // Dedupe case-insensitively (e.g. "sec01" / "SEC01" / "Sec01" count as one), keeping the first-seen casing
@@ -668,12 +692,23 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ user, onLogo
 
     if (!student || !exam) return null;
 
+    // The order this student actually saw. Nothing is stored for it — the order is derived
+    // from their student id, so replaying examForStudent reproduces exactly what they got.
+    const studentOrder = exam.shuffleQuestions && student.studentId
+       ? examForStudent(exam, student.studentId).questions.map(q => q.id)
+       : null;
+
     return (
         <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4 backdrop-blur-sm">
             <div className="bg-white rounded-2xl w-full max-w-3xl max-h-[85vh] flex flex-col shadow-2xl animate-fade-in">
                 <div className="p-4 border-b flex justify-between items-center bg-gray-50 rounded-t-2xl">
                     <div>
                        <h3 className="font-bold text-lg text-gray-800">{student.name} ({student.studentId})</h3>
+                       {studentOrder && (
+                          <p className="text-xs text-gray-400 mt-0.5">
+                             ข้อสอบชุดนี้สลับลำดับ — รายการด้านล่างเรียงตามลำดับต้นฉบับของอาจารย์ และกำกับไว้ว่านักศึกษาคนนี้เห็นเป็นข้อที่เท่าไหร่
+                          </p>
+                       )}
                        <div className="flex items-center gap-2 mt-1">
                           <span className={`text-xs px-2 py-0.5 rounded-full font-bold ${progress?.status === 'COMPLETED' ? 'bg-green-100 text-green-700' : 'bg-yellow-100 text-yellow-700'}`}>
                              {progress?.status || 'NOT STARTED'}
@@ -697,17 +732,49 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ user, onLogo
                         exam.questions.map((q, idx) => {
                             const ans = progress.answers[q.id];
                             const correct = isAnswerCorrect(q, ans);
+                            // Questions are listed in the teacher's own order. When the exam
+                            // shuffles, also show where this question sat for THIS student, so
+                            // "ข้อ 3 ผิดนะครับ" from a student maps to the right row.
+                            const seenAt = studentOrder ? studentOrder.indexOf(q.id) + 1 : 0;
+                            // MCQ answers are stored as the original option index; showing that
+                            // bare number is unreadable, more so once choices are shuffled.
+                            const isMcq = q.type === QuestionType.MULTIPLE_CHOICE;
+                            const chosenText = isMcq && ans !== undefined && ans !== null && ans !== ''
+                               ? q.options?.[Number(ans)]
+                               : undefined;
                             return (
                                 <div key={q.id} className="border-b pb-4 last:border-0">
-                                    <div className="flex justify-between mb-2">
-                                        <span className="font-bold text-gray-700 text-sm">Q{idx+1}: {q.text}</span>
-                                        <span className={`text-xs font-bold px-2 py-0.5 rounded-full h-fit ${correct ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-600'}`}>
+                                    <div className="flex justify-between mb-2 gap-3">
+                                        <span className="font-bold text-gray-700 text-sm">
+                                           Q{idx+1}: {q.text}
+                                           {seenAt > 0 && seenAt !== idx + 1 && (
+                                              <span className="ml-2 font-normal text-xs text-gray-400 whitespace-nowrap">(นักศึกษาเห็นเป็นข้อที่ {seenAt})</span>
+                                           )}
+                                        </span>
+                                        <span className={`text-xs font-bold px-2 py-0.5 rounded-full h-fit whitespace-nowrap ${correct ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-600'}`}>
                                            {correct ? q.score : 0} / {q.score} pts
                                         </span>
                                     </div>
+                                    {isMcq ? (
+                                        <div className="space-y-1">
+                                           <div className={`p-3 rounded-lg text-sm border ${correct ? 'bg-green-50 border-green-200 text-green-900' : 'bg-red-50 border-red-200 text-red-900'}`}>
+                                              <span className="text-xs font-bold uppercase opacity-60 mr-2">ตอบ</span>
+                                              {chosenText !== undefined
+                                                 ? <>{chosenText} <span className="text-xs opacity-50">(ตัวเลือกที่ {Number(ans) + 1})</span></>
+                                                 : <span className="italic opacity-60">No answer provided</span>}
+                                           </div>
+                                           {!correct && q.correctOptionIndex !== undefined && (
+                                              <div className="p-2 rounded-lg text-sm bg-gray-50 border border-gray-200 text-gray-600">
+                                                 <span className="text-xs font-bold uppercase opacity-60 mr-2">เฉลย</span>
+                                                 {q.options?.[q.correctOptionIndex]} <span className="text-xs opacity-50">(ตัวเลือกที่ {q.correctOptionIndex + 1})</span>
+                                              </div>
+                                           )}
+                                        </div>
+                                    ) : (
                                     <div className="bg-gray-50 p-3 rounded-lg text-sm font-mono whitespace-pre-wrap border border-gray-200">
                                         {ans ? getAnswerDisplay(ans) : <span className="text-gray-400 italic">No answer provided</span>}
                                     </div>
+                                    )}
                                     {q.type === QuestionType.JAVA_CODE && typeof ans === 'object' && ans !== null && (
                                        <div className="mt-2 text-xs flex gap-4">
                                           <span className="text-gray-500 font-bold">
@@ -822,6 +889,47 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ user, onLogo
                                );
                             })}
                          </div>
+                      )}
+                   </div>
+                   <div>
+                      <label className="text-sm font-medium text-gray-700">Assigned สาขา <span className="text-xs text-gray-400 font-normal">(ไม่เลือก = ทุกสาขา)</span></label>
+                      {/* ANDed with the sections above: a student must match a selected section
+                          AND a selected major. Leaving this empty means "any major". */}
+                      {uniqueMajors.length === 0 ? (
+                         <p className="text-sm text-gray-400 mt-1">ยังไม่มีข้อมูลสาขาใน Roster — เพิ่มสาขาให้นักศึกษาในแท็บ Roster ก่อน</p>
+                      ) : (
+                         <>
+                           <div className="flex flex-wrap gap-2 mt-1">
+                              {uniqueMajors.map(major => {
+                                 const isChecked = (editingExam.assignedMajors || []).some(a => normMajor(a) === normMajor(major));
+                                 return (
+                                    <label
+                                       key={major}
+                                       className={`px-3 py-1.5 rounded-full border-2 text-sm cursor-pointer transition-colors select-none ${isChecked ? 'bg-blue-600 border-blue-600 text-white' : 'border-gray-200 text-gray-600 hover:border-blue-300'}`}
+                                    >
+                                       <input
+                                          type="checkbox"
+                                          className="hidden"
+                                          checked={isChecked}
+                                          onChange={() => {
+                                             const current = editingExam.assignedMajors || [];
+                                             const newMajors = isChecked
+                                                ? current.filter(a => normMajor(a) !== normMajor(major))
+                                                : [...current, major];
+                                             setEditingExam({ ...editingExam, assignedMajors: newMajors });
+                                          }}
+                                       />
+                                       {major}
+                                    </label>
+                                 );
+                              })}
+                           </div>
+                           {(editingExam.assignedMajors || []).length > 0 && (
+                              <p className="text-xs text-gray-500 mt-2">
+                                 เห็นข้อสอบนี้ {eligibleCount} คน — ต้องอยู่ใน Section ที่เลือก <strong>และ</strong> สาขาที่เลือก
+                              </p>
+                           )}
+                         </>
                       )}
                    </div>
                 </div>
@@ -983,6 +1091,7 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ user, onLogo
                     <p className="text-sm text-gray-600 line-clamp-2">{exam.description || 'No description provided.'}</p>
                     <div className="flex flex-wrap gap-2">
                       {exam.assignedSections.map(sec => <span key={sec} className="bg-blue-100 text-blue-800 text-xs px-2 py-1 rounded">Group: {sec}</span>)}
+                      {(exam.assignedMajors || []).map(major => <span key={major} className="bg-indigo-100 text-indigo-800 text-xs px-2 py-1 rounded">สาขา: {major}</span>)}
                     </div>
                   </div>
                   <div className="pt-4 mt-4 border-t border-gray-100 space-y-3">

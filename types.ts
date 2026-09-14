@@ -57,6 +57,7 @@ export interface Exam {
   title: string;
   description: string;
   assignedSections: string[]; // e.g., ["SEC01", "SEC02"]
+  assignedMajors?: string[]; // ANDed with assignedSections; empty means "any major"
   questions: Question[];
   durationMinutes: number;
   isActive: boolean;
