@@ -119,12 +119,18 @@ export const Login: React.FC<LoginProps> = ({ onLogin }) => {
                 <label className="block text-sm font-semibold text-gray-700 mb-2">
                   {role === UserRole.TEACHER ? 'Username' : 'Student ID'}
                 </label>
+                {/* These machines are shared: exam room PCs are used by one student after
+                    another, so the browser must not offer the previous person's student id
+                    as a suggestion, nor offer to remember the teacher's password. */}
                 <input
                   type="text"
                   className="w-full p-3 bg-gray-50 border border-gray-200 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-purple-500 outline-none transition-all"
                   placeholder={role === UserRole.TEACHER ? 'Enter username' : 'Enter your Student ID'}
                   value={identifier}
                   onChange={(e) => setIdentifier(e.target.value)}
+                  autoComplete="off"
+                  autoCorrect="off"
+                  spellCheck={false}
                   required
                 />
               </div>
@@ -140,6 +146,7 @@ export const Login: React.FC<LoginProps> = ({ onLogin }) => {
                     placeholder="Enter password"
                     value={password}
                     onChange={(e) => setPassword(e.target.value)}
+                    autoComplete="new-password"
                     required
                   />
                 </div>

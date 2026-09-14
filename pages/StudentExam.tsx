@@ -131,6 +131,10 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
   const hasShownCodeInfoRef = useRef(false);
   const [browserSupported] = useState(isExamBrowserSupported);
   const [captureWarning, setCaptureWarning] = useState(false);
+  // Shown once, right after submitting: exam room PCs are shared, and the session lives
+  // until the tab closes, so the next student would otherwise sit down still signed in as
+  // whoever used the machine before them.
+  const [justFinished, setJustFinished] = useState(false);
   
   // Compiler State
   const [codeOutput, setCodeOutput] = useState<string>('');
@@ -390,6 +394,7 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
     alert(`Exam Submitted! Your Score: ${finalScore}`);
 
     setActiveExam(null);
+    setJustFinished(true);
     loadExamsAndStatus();
   };
 
@@ -720,6 +725,21 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
       </header>
 
       <main className="container mx-auto px-4 py-8">
+         {justFinished && (
+            <div className="mb-6 bg-green-50 border-2 border-green-300 text-green-900 px-5 py-4 rounded-xl flex flex-col sm:flex-row sm:items-center gap-4">
+               <div className="flex-1">
+                  <p className="font-bold text-lg">ส่งข้อสอบเรียบร้อยแล้ว — กรุณาออกจากระบบก่อนลุกจากเครื่อง</p>
+                  <p className="text-sm mt-0.5">เครื่องนี้เป็นเครื่องส่วนกลาง ถ้าไม่กดออกจากระบบหรือปิดแท็บ คนที่มานั่งต่อจะยังเข้าใช้งานในชื่อของคุณอยู่</p>
+                  <p className="text-xs text-green-700/80 mt-1">Your exam has been submitted. Log out or close this tab before you leave — on a shared computer the next person would otherwise still be signed in as you.</p>
+               </div>
+               <button
+                  onClick={onLogout}
+                  className="bg-green-600 hover:bg-green-700 text-white font-bold px-6 py-3 rounded-lg whitespace-nowrap shadow-md"
+               >
+                  ออกจากระบบ
+               </button>
+            </div>
+         )}
          {!browserSupported && (
             <div className="mb-6 bg-amber-50 border border-amber-200 text-amber-900 px-4 py-3 rounded-xl flex gap-3">
                <span className="text-lg leading-none mt-0.5">⚠️</span>
