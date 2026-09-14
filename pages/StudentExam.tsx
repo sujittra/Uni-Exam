@@ -40,6 +40,63 @@ const noCopy = (className = '') => ({
    onDragStart: (e: React.DragEvent) => e.preventDefault(),
 });
 
+interface ExamRule { th: React.ReactNode; en: string }
+
+// The exam rules, in order. Kept as data so the modal can number them and split them across
+// pages without the numbers being written by hand — the shuffle rule is only present when
+// the exam actually shuffles something.
+const examRules = (exam: Exam): ExamRule[] => {
+   const rules: ExamRule[] = [
+      {
+         th: <>คุณมีเวลา <strong>{exam.durationMinutes} นาที</strong> ในการทำข้อสอบนี้</>,
+         en: `You have ${exam.durationMinutes} minutes to complete this exam.`,
+      },
+      {
+         th: 'ห้ามรีเฟรชหน้าเว็บหรือปิดแท็บเบราว์เซอร์ซ้ำๆ',
+         en: 'Do not refresh the page or close the browser tab repeatedly.',
+      },
+      {
+         th: 'ระบบจะบันทึกความคืบหน้าอัตโนมัติทุก 30 วินาที',
+         en: 'Your progress is saved automatically every 30 seconds.',
+      },
+      {
+         th: 'เมื่อส่งคำตอบแล้ว จะไม่สามารถแก้ไขคำตอบได้อีก',
+         en: 'Once submitted, you cannot change your answers.',
+      },
+      {
+         th: 'หน้าจอจะเข้าสู่โหมดเต็มจอ (Fullscreen) อัตโนมัติ หากสลับแท็บ/สลับหน้าจอ หรือกด Esc ออกจากโหมดเต็มจอ ระบบจะบันทึกไว้เป็นการ "ออกจากหน้าสอบ" และแจ้งให้อาจารย์ทราบ',
+         en: 'The exam will enter fullscreen mode automatically. Switching tabs/screens or pressing Esc to exit fullscreen will be logged as "leaving the exam" and shown to your instructor.',
+      },
+      {
+         th: 'ห้ามคัดลอกโจทย์ ระบบปิดการเลือกข้อความและคลิกขวาในส่วนของโจทย์ไว้ หากกดปุ่มจับภาพหน้าจอ ระบบจะบันทึกไว้และแจ้งให้อาจารย์ทราบ',
+         en: 'Copying the question text is disabled (selection and right-click are turned off). Pressing a screen-capture shortcut is logged and reported to your instructor.',
+      },
+   ];
+
+   if (exam.shuffleQuestions || exam.shuffleOptions) {
+      const both = exam.shuffleQuestions && exam.shuffleOptions;
+      rules.push({
+         th: both
+            ? 'ลำดับข้อและลำดับตัวเลือกของแต่ละคนไม่เหมือนกัน — ข้อที่ 1 ของคุณอาจไม่ใช่ข้อที่ 1 ของเพื่อน'
+            : exam.shuffleQuestions
+               ? 'ลำดับข้อของแต่ละคนไม่เหมือนกัน — ข้อที่ 1 ของคุณอาจไม่ใช่ข้อที่ 1 ของเพื่อน'
+               : 'ลำดับตัวเลือกของแต่ละคนไม่เหมือนกัน — ตัวเลือก ก. ของคุณอาจไม่ใช่ ก. ของเพื่อน',
+         en: both
+            ? 'Both the question order and the choice order differ from student to student.'
+            : exam.shuffleQuestions
+               ? 'The question order differs from student to student.'
+               : 'The order of the choices differs from student to student.',
+      });
+   }
+
+   rules.push({
+      th: 'การทุจริตหรือพยายามทุจริตจะถูกบันทึกไว้',
+      en: 'Malpractice or cheating attempts will be logged.',
+   });
+
+   return rules;
+};
+
 export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
   const [availableExams, setAvailableExams] = useState<Exam[]>([]);
   const [examStatuses, setExamStatuses] = useState<Record<string, StudentProgress>>({});
@@ -69,6 +126,7 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
   
   // UI State
   const [showTOS, setShowTOS] = useState<Exam | null>(null);
+  const [tosPage, setTosPage] = useState(1);
   const [showCodeInfoModal, setShowCodeInfoModal] = useState(false);
   const hasShownCodeInfoRef = useRef(false);
   const [browserSupported] = useState(isExamBrowserSupported);
@@ -718,7 +776,7 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
                                  <div className="text-xs text-gray-400">Your Score</div>
                               </div>
                            ) : (
-                              <Button onClick={() => setShowTOS(exam)}>
+                              <Button onClick={() => { setTosPage(1); setShowTOS(exam); }}>
                                  {status?.status === 'IN_PROGRESS' ? 'Continue Exam' : 'Start Exam'}
                               </Button>
                            )}
@@ -730,60 +788,67 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
          </div>
       </main>
 
-      {/* Terms of Service Modal */}
-      {showTOS && (
+      {/* Terms of Service Modal — split across two pages so it fits without scrolling on a
+          laptop; accepting is only possible on the last page. */}
+      {showTOS && (() => {
+         const rules = examRules(showTOS);
+         const half = Math.ceil(rules.length / 2);
+         const pages = [rules.slice(0, half), rules.slice(half)];
+         const isLastPage = tosPage >= pages.length;
+         return (
          <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
-            <div className="bg-white rounded-2xl max-w-lg w-full p-6 shadow-2xl animate-fade-in">
-               <h2 className="text-xl font-bold text-gray-900 mb-0.5">กติกาการสอบ</h2>
-               <p className="text-xs text-gray-400 mb-4">Exam Rules &amp; Instructions</p>
-               <div className={`text-sm mb-3 p-4 rounded-lg border ${browserSupported ? 'bg-blue-50 border-blue-100 text-blue-900' : 'bg-amber-50 border-amber-200 text-amber-900'}`}>
-                  <p className="font-bold">{browserSupported ? '🖥 ใช้ Google Chrome บนคอมพิวเตอร์เท่านั้น' : '⚠️ เบราว์เซอร์นี้ไม่รองรับ — กรุณาเปิดด้วย Google Chrome บนคอมพิวเตอร์'}</p>
-                  <p className="mt-0.5">ระบบคุมสอบต้องใช้โหมดเต็มจอ (Fullscreen) ซึ่งทุกเบราว์เซอร์บน iPhone/iPad ไม่รองรับ</p>
-                  <p className={`text-xs mt-1 ${browserSupported ? 'text-blue-700/80' : 'text-amber-700/80'}`}>Take this exam in Google Chrome on a computer. Proctoring requires fullscreen mode, which no browser on iPhone/iPad supports.</p>
+            <div className="bg-white rounded-2xl max-w-lg w-full p-6 shadow-2xl animate-fade-in max-h-[90vh] flex flex-col">
+               <div className="flex justify-between items-start mb-4">
+                  <div>
+                     <h2 className="text-xl font-bold text-gray-900 mb-0.5">กติกาการสอบ</h2>
+                     <p className="text-xs text-gray-400">Exam Rules &amp; Instructions</p>
+                  </div>
+                  <span className="text-xs font-bold text-gray-400 bg-gray-100 rounded-full px-3 py-1 whitespace-nowrap">
+                     หน้า {tosPage} / {pages.length}
+                  </span>
                </div>
-               <div className="space-y-3 text-gray-600 text-sm mb-6 bg-gray-50 p-4 rounded-lg">
-                  <div>
-                     <p>1. คุณมีเวลา <strong>{showTOS.durationMinutes} นาที</strong> ในการทำข้อสอบนี้</p>
-                     <p className="text-xs text-gray-400">You have {showTOS.durationMinutes} minutes to complete this exam.</p>
-                  </div>
-                  <div>
-                     <p>2. ห้ามรีเฟรชหน้าเว็บหรือปิดแท็บเบราว์เซอร์ซ้ำๆ</p>
-                     <p className="text-xs text-gray-400">Do not refresh the page or close the browser tab repeatedly.</p>
-                  </div>
-                  <div>
-                     <p>3. ระบบจะบันทึกความคืบหน้าอัตโนมัติทุก 30 วินาที</p>
-                     <p className="text-xs text-gray-400">Your progress is saved automatically every 30 seconds.</p>
-                  </div>
-                  <div>
-                     <p>4. เมื่อส่งคำตอบแล้ว จะไม่สามารถแก้ไขคำตอบได้อีก</p>
-                     <p className="text-xs text-gray-400">Once submitted, you cannot change your answers.</p>
-                  </div>
-                  <div>
-                     <p>5. หน้าจอจะเข้าสู่โหมดเต็มจอ (Fullscreen) อัตโนมัติ หากสลับแท็บ/สลับหน้าจอ หรือกด Esc ออกจากโหมดเต็มจอ ระบบจะบันทึกไว้เป็นการ "ออกจากหน้าสอบ" และแจ้งให้อาจารย์ทราบ</p>
-                     <p className="text-xs text-gray-400">The exam will enter fullscreen mode automatically. Switching tabs/screens or pressing Esc to exit fullscreen will be logged as "leaving the exam" and shown to your instructor.</p>
-                  </div>
-                  <div>
-                     <p>6. ห้ามคัดลอกโจทย์ ระบบปิดการเลือกข้อความและคลิกขวาในส่วนของโจทย์ไว้ หากกดปุ่มจับภาพหน้าจอ ระบบจะบันทึกไว้และแจ้งให้อาจารย์ทราบ</p>
-                     <p className="text-xs text-gray-400">Copying the question text is disabled (selection and right-click are turned off). Pressing a screen-capture shortcut is logged and reported to your instructor.</p>
-                  </div>
-                  {(showTOS.shuffleQuestions || showTOS.shuffleOptions) && (
-                     <div>
-                        <p>7. {showTOS.shuffleQuestions && showTOS.shuffleOptions ? 'ลำดับข้อและลำดับตัวเลือกของแต่ละคนไม่เหมือนกัน' : showTOS.shuffleQuestions ? 'ลำดับข้อของแต่ละคนไม่เหมือนกัน' : 'ลำดับตัวเลือกของแต่ละคนไม่เหมือนกัน'} — ข้อที่ {showTOS.shuffleQuestions ? '1 ของคุณอาจไม่ใช่ข้อที่ 1 ของเพื่อน' : 'ตัวเลือก ก. ของคุณอาจไม่ใช่ ก. ของเพื่อน'}</p>
-                        <p className="text-xs text-gray-400">{showTOS.shuffleQuestions && showTOS.shuffleOptions ? 'Both the question order and the choice order differ from student to student.' : showTOS.shuffleQuestions ? 'The question order differs from student to student.' : 'The order of the choices differs from student to student.'}</p>
+
+               <div className="overflow-y-auto flex-1">
+                  {tosPage === 1 && (
+                     <div className={`text-sm mb-3 p-4 rounded-lg border ${browserSupported ? 'bg-blue-50 border-blue-100 text-blue-900' : 'bg-amber-50 border-amber-200 text-amber-900'}`}>
+                        <p className="font-bold">{browserSupported ? '🖥 ใช้ Google Chrome บนคอมพิวเตอร์เท่านั้น' : '⚠️ เบราว์เซอร์นี้ไม่รองรับ — กรุณาเปิดด้วย Google Chrome บนคอมพิวเตอร์'}</p>
+                        <p className="mt-0.5">ระบบคุมสอบต้องใช้โหมดเต็มจอ (Fullscreen) ซึ่งทุกเบราว์เซอร์บน iPhone/iPad ไม่รองรับ</p>
+                        <p className={`text-xs mt-1 ${browserSupported ? 'text-blue-700/80' : 'text-amber-700/80'}`}>Take this exam in Google Chrome on a computer. Proctoring requires fullscreen mode, which no browser on iPhone/iPad supports.</p>
                      </div>
                   )}
-                  <div>
-                     <p>{showTOS.shuffleQuestions || showTOS.shuffleOptions ? '8' : '7'}. การทุจริตหรือพยายามทุจริตจะถูกบันทึกไว้</p>
-                     <p className="text-xs text-gray-400">Malpractice or cheating attempts will be logged.</p>
+                  <div className="space-y-3 text-gray-600 text-sm bg-gray-50 p-4 rounded-lg">
+                     {/* Numbering runs across both pages, so page 2 continues where page 1 left off. */}
+                     {pages[tosPage - 1].map((rule, i) => {
+                        const number = (tosPage === 1 ? 0 : half) + i + 1;
+                        return (
+                           <div key={number}>
+                              <p>{number}. {rule.th}</p>
+                              <p className="text-xs text-gray-400">{rule.en}</p>
+                           </div>
+                        );
+                     })}
                   </div>
                </div>
-               <div className="flex gap-3 justify-end">
-                  <Button variant="secondary" onClick={() => setShowTOS(null)}>ยกเลิก</Button>
-                  <Button onClick={() => initExamSession(showTOS)}>ยอมรับ เริ่มทำข้อสอบ</Button>
+
+               <div className="flex gap-3 justify-between items-center pt-5">
+                  <Button variant="secondary" onClick={() => { setShowTOS(null); setTosPage(1); }}>ยกเลิก</Button>
+                  <div className="flex gap-3">
+                     {tosPage > 1 && (
+                        <Button variant="secondary" onClick={() => setTosPage(p => p - 1)}>&larr; ย้อนกลับ</Button>
+                     )}
+                     {isLastPage ? (
+                        // Must stay a direct click: requestFullscreen is only granted inside a
+                        // user gesture.
+                        <Button onClick={() => initExamSession(showTOS)}>ยอมรับ เริ่มทำข้อสอบ</Button>
+                     ) : (
+                        <Button onClick={() => setTosPage(p => p + 1)}>อ่านต่อ &rarr;</Button>
+                     )}
+                  </div>
                </div>
             </div>
          </div>
-      )}
+         );
+      })()}
     </div>
   );
 };
