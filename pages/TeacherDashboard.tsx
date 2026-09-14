@@ -2,6 +2,7 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { User, Exam, Question, QuestionType, StudentProgress, CodeLanguage, CodeInputMode } from '../types';
 import { saveExam, deleteExam, getExamsForTeacher, getLiveProgress, importStudents, updateExamStatus, getExamResults, uploadExamImage, getStudents, recalculateExamScores, reopenStudentProgress, updateStudent, deleteStudents, assignMajorToStudents, isAssignedToStudent, StudentImportRow } from '../services/dataService';
 import { examForStudent } from '../services/shuffle';
+import { loadView, saveView } from '../services/session';
 import { Card } from '../components/Card';
 import { Button } from '../components/Button';
 
@@ -123,7 +124,11 @@ const normSection = (s?: string) => (s || '').trim().toUpperCase();
 const normMajor = (s?: string) => (s || '').trim().toLowerCase();
 
 export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ user, onLogout }) => {
-  const [activeTab, setActiveTab] = useState<'EXAMS' | 'STUDENTS' | 'MONITOR'>('EXAMS');
+  // Restored on refresh alongside the session, so a teacher watching the Monitor doesn't
+  // land back on Exams every time they reload.
+  const [activeTab, setActiveTab] = useState<'EXAMS' | 'STUDENTS' | 'MONITOR'>(
+     () => loadView<'EXAMS' | 'STUDENTS' | 'MONITOR'>('teacherTab', v => ['EXAMS', 'STUDENTS', 'MONITOR'].includes(v)) || 'EXAMS'
+  );
   const [exams, setExams] = useState<Exam[]>([]);
   const [students, setStudents] = useState<User[]>([]);
   
@@ -136,7 +141,9 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ user, onLogo
   const [importStatus, setImportStatus] = useState('');
 
   // Monitor State
-  const [monitoringExamId, setMonitoringExamId] = useState<string | null>(null);
+  const [monitoringExamId, setMonitoringExamId] = useState<string | null>(
+     () => loadView<string>('monitorExamId', v => typeof v === 'string' && v.length > 0)
+  );
   const [liveData, setLiveData] = useState<StudentProgress[]>([]);
   
   // Monitor Filters & Sort
@@ -164,6 +171,17 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ user, onLogo
     loadExams();
     loadStudents(); 
   }, []);
+
+  useEffect(() => { saveView('teacherTab', activeTab); }, [activeTab]);
+  useEffect(() => { saveView('monitorExamId', monitoringExamId); }, [monitoringExamId]);
+
+  // A restored exam id can point at something since deleted (or another teacher's) — drop
+  // back to the picker rather than rendering an empty monitor with no explanation.
+  useEffect(() => {
+    if (monitoringExamId && exams.length > 0 && !exams.some(e => e.id === monitoringExamId)) {
+      setMonitoringExamId(null);
+    }
+  }, [exams, monitoringExamId]);
 
   // Polling for monitoring
   useEffect(() => {
