@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { User, Exam, Question, QuestionType, StudentProgress, CodeLanguage } from '../types';
-import { saveExam, deleteExam, getExamsForTeacher, getLiveProgress, importStudents, updateExamStatus, getExamResults, uploadExamImage, getStudents, recalculateExamScores, reopenStudentProgress } from '../services/dataService';
+import { User, Exam, Question, QuestionType, StudentProgress, CodeLanguage, CodeInputMode } from '../types';
+import { saveExam, deleteExam, getExamsForTeacher, getLiveProgress, importStudents, updateExamStatus, getExamResults, uploadExamImage, getStudents, recalculateExamScores, reopenStudentProgress, updateStudent, deleteStudents, assignMajorToStudents, StudentImportRow } from '../services/dataService';
 import { Card } from '../components/Card';
 import { Button } from '../components/Button';
 
@@ -52,6 +52,69 @@ const isAnswerCorrect = (q: Question, ans: any): boolean => {
     return false;
 };
 
+// Roster CSV: `StudentID, Name, Section, Major` — Major is optional (4th column), and a
+// header row is optional too. When a header IS present its column names decide the order,
+// so a file exported with the columns rearranged still imports correctly.
+const CSV_HEADER_ALIASES: Record<string, 'id' | 'name' | 'section' | 'major'> = {
+  studentid: 'id', 'student id': 'id', id: 'id', รหัสนักศึกษา: 'id', รหัส: 'id',
+  name: 'name', fullname: 'name', 'full name': 'name', ชื่อ: 'name', 'ชื่อ-สกุล': 'name',
+  section: 'section', sectionid: 'section', 'section id': 'section', sec: 'section', กลุ่ม: 'section',
+  major: 'major', programme: 'major', program: 'major', department: 'major', สาขา: 'major', สาขาวิชา: 'major',
+};
+
+// Splits one CSV line, honouring "quoted, fields" and "" escapes (Excel exports use them).
+const splitCsvLine = (line: string): string[] => {
+  const out: string[] = [];
+  let cur = '';
+  let inQuotes = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (inQuotes) {
+      if (ch === '"') {
+        if (line[i + 1] === '"') { cur += '"'; i++; } else { inQuotes = false; }
+      } else cur += ch;
+    } else if (ch === '"') inQuotes = true;
+    else if (ch === ',') { out.push(cur); cur = ''; }
+    else cur += ch;
+  }
+  out.push(cur);
+  return out.map(v => v.trim());
+};
+
+const parseRosterCsv = (text: string): StudentImportRow[] => {
+  // \uFEFF: Excel writes a BOM, which would otherwise glue itself to the first column name.
+  const lines = text.replace(/^\uFEFF/, '').split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+  if (lines.length === 0) return [];
+
+  let order: ('id' | 'name' | 'section' | 'major')[] = ['id', 'name', 'section', 'major'];
+  let startIndex = 0;
+  const firstCells = splitCsvLine(lines[0]).map(c => c.toLowerCase());
+  const mapped = firstCells.map(c => CSV_HEADER_ALIASES[c]);
+  // Treat row 1 as a header only if every cell is a recognised column name — otherwise a
+  // student legitimately named e.g. "Name" would silently lose their row.
+  if (mapped.length > 1 && mapped.every(Boolean) && mapped.includes('id')) {
+    order = mapped as typeof order;
+    startIndex = 1;
+  }
+
+  return lines.slice(startIndex).map((line, i) => {
+    const cells = splitCsvLine(line);
+    const row: Record<string, string> = {};
+    order.forEach((key, idx) => { row[key] = cells[idx] || ''; });
+    if (!row.id || !row.name) throw new Error(`บรรทัดที่ ${i + 1 + startIndex} ไม่มีรหัสนักศึกษาหรือชื่อ`);
+    return {
+      id: row.id,
+      name: row.name,
+      section: row.section || 'General',
+      major: row.major || undefined,
+    };
+  });
+};
+
+// Helper: Is this code question set to "call the student's function" instead of stdin?
+// Java has no harness for it, so the mode only takes effect for Python.
+const isFunctionMode = (q: Question) => q.language === 'python3' && q.inputMode === 'function';
+
 // Helper: Normalize a section name for case-insensitive comparison (e.g. "sec01" == "SEC01")
 const normSection = (s?: string) => (s || '').trim().toUpperCase();
 
@@ -80,9 +143,18 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ user, onLogo
   // Review/Inspect Modal
   const [inspectStudentId, setInspectStudentId] = useState<string | null>(null);
 
-  // Roster Sort
+  // Roster Sort / Filter / Paging
   const [rosterSearch, setRosterSearch] = useState('');
   const [rosterSortConfig, setRosterSortConfig] = useState<{ key: keyof User; direction: SortDirection }>({ key: 'studentId', direction: 'ASC' });
+  const [rosterMajorFilter, setRosterMajorFilter] = useState<string>('ALL');
+  const [rosterPageSize, setRosterPageSize] = useState(25);
+  const [rosterPage, setRosterPage] = useState(1);
+
+  // Roster selection & editing
+  const [selectedStudentIds, setSelectedStudentIds] = useState<string[]>([]);
+  const [editingStudent, setEditingStudent] = useState<User | null>(null);
+  const [editDraft, setEditDraft] = useState({ name: '', section: '', major: '' });
+  const [bulkMajor, setBulkMajor] = useState('');
 
   useEffect(() => {
     loadExams();
@@ -131,7 +203,37 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ user, onLogo
   };
 
   const handleEditExam = (exam: Exam) => { setEditingExam(JSON.parse(JSON.stringify(exam))); };
-  
+
+  // Duplicate an exam into a fresh, closed copy and jump straight into editing it.
+  // `exams` already has hidden test cases merged in (getExamsForTeacher does that), so the
+  // copy keeps them; saveExam pushes them back out to the RLS-protected table under the
+  // new question ids. Sections are deliberately cleared so a half-edited copy can't show
+  // up for students alongside the original.
+  const handleDuplicateExam = async (exam: Exam) => {
+    const copy: Exam = {
+      ...JSON.parse(JSON.stringify(exam)),
+      id: `e${Date.now()}`, // temp id — saveExam treats this as "insert", not "update"
+      title: `${exam.title} (สำเนา)`,
+      isActive: false,
+      assignedSections: [],
+      createdBy: user.id,
+    };
+    setIsSaving(true);
+    try {
+      const saved = await saveExam(copy);
+      // Re-read so the editor gets the copy's REAL question ids (saveExam always deletes +
+      // reinserts questions, so the ids it echoes back are the originals').
+      const fresh = await getExamsForTeacher(user.id);
+      setExams([...fresh]);
+      setEditingExam(fresh.find(e => e.id === saved.id) || saved);
+    } catch (e: any) {
+      alert("Duplicate failed: " + e.message);
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+
   const handleDeleteExam = async (id: string) => {
     if (window.confirm("Are you sure you want to delete this exam?")) {
        await deleteExam(id);
@@ -169,19 +271,78 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ user, onLogo
 
   const handleImportStudents = async () => {
     try {
-      const lines = importText.trim().split('\n');
-      const data = lines.map(line => {
-        const [id, name, section] = line.split(',');
-        if (!id || !name) throw new Error("Invalid format");
-        return { id: id.trim(), name: name.trim(), section: section ? section.trim() : 'General' };
-      });
+      const data = parseRosterCsv(importText);
+      if (data.length === 0) throw new Error("No rows found");
       // Pass user.id as the creator of these students
       await importStudents(user.id, data);
-      setImportStatus(`Success! Imported ${data.length} students.`);
+      setImportStatus(`สำเร็จ! นำเข้า ${data.length} รายชื่อ`);
       setImportText('');
       loadStudents();
-    } catch (e) {
-      setImportStatus('Error parsing CSV. Use format: ID, Name, Section');
+    } catch (e: any) {
+      setImportStatus(`ผิดพลาด: ${e.message}. รูปแบบที่ใช้ได้: StudentID, ชื่อ, Section, สาขา (สาขาใส่หรือไม่ใส่ก็ได้)`);
+    }
+  };
+
+  // Import from a picked .csv file. The file's text lands in the same textarea so the
+  // teacher can eyeball/fix it before committing — same parser either way.
+  const handleCsvFile = async (file: File | null) => {
+    if (!file) return;
+    try {
+      const text = await file.text();
+      setImportText(text);
+      const data = parseRosterCsv(text);
+      setImportStatus(
+        data.length > 0
+          ? `อ่านไฟล์ "${file.name}" ได้ ${data.length} รายชื่อ — ตรวจสอบแล้วกด Import Data`
+          : `ไฟล์ "${file.name}" ไม่มีข้อมูลที่อ่านได้`
+      );
+    } catch (e: any) {
+      setImportStatus(`อ่านไฟล์ไม่สำเร็จ: ${e.message}`);
+    }
+  };
+
+  const handleUpdateStudent = async () => {
+    if (!editingStudent) return;
+    if (!editDraft.name.trim()) return alert("ต้องมีชื่อนักศึกษา");
+    try {
+      await updateStudent(editingStudent.id, {
+        name: editDraft.name.trim(),
+        section: editDraft.section.trim(),
+        major: editDraft.major.trim(),
+      });
+      setEditingStudent(null);
+      loadStudents();
+    } catch (e: any) {
+      alert(e.message);
+    }
+  };
+
+  const handleDeleteStudents = async (ids: string[]) => {
+    if (ids.length === 0) return;
+    const who = ids.length === 1
+      ? students.find(s => s.id === ids[0])?.name || 'นักศึกษาคนนี้'
+      : `${ids.length} คน`;
+    if (!window.confirm(`ลบ ${who} ออกจาก Roster?\nประวัติการสอบทั้งหมดของนักศึกษาจะถูกลบไปด้วย และกู้คืนไม่ได้`)) return;
+    try {
+      await deleteStudents(ids);
+      setSelectedStudentIds(prev => prev.filter(id => !ids.includes(id)));
+      loadStudents();
+    } catch (e: any) {
+      alert(e.message);
+    }
+  };
+
+  const handleAssignMajor = async () => {
+    const major = bulkMajor.trim();
+    if (selectedStudentIds.length === 0) return;
+    if (!major) return alert("กรุณาเลือกหรือพิมพ์ชื่อสาขาก่อน");
+    try {
+      await assignMajorToStudents(selectedStudentIds, major);
+      setSelectedStudentIds([]);
+      setBulkMajor('');
+      loadStudents();
+    } catch (e: any) {
+      alert(e.message);
     }
   };
 
@@ -235,6 +396,7 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ user, onLogo
       testCases: type === QuestionType.JAVA_CODE ? [{ input: '', output: '' }] : undefined,
       language: type === QuestionType.JAVA_CODE ? 'java' : undefined,
       allowFileUpload: type === QuestionType.JAVA_CODE ? true : undefined,
+      inputMode: type === QuestionType.JAVA_CODE ? 'stdin' : undefined,
       acceptedAnswers: type === QuestionType.SHORT_ANSWER ? [''] : undefined
     };
     setEditingExam({ ...editingExam, questions: [...editingExam.questions, newQ] });
@@ -263,10 +425,15 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ user, onLogo
   };
 
   const getSortedRoster = useMemo(() => {
-    let filtered = students.filter(s => 
-      s.name.toLowerCase().includes(rosterSearch.toLowerCase()) || 
-      s.studentId?.includes(rosterSearch) ||
-      s.section?.toLowerCase().includes(rosterSearch.toLowerCase())
+    const term = rosterSearch.trim().toLowerCase();
+    let filtered = students.filter(s =>
+      (!term ||
+        s.name.toLowerCase().includes(term) ||
+        s.studentId?.toLowerCase().includes(term) ||
+        s.section?.toLowerCase().includes(term) ||
+        s.major?.toLowerCase().includes(term)) &&
+      (rosterMajorFilter === 'ALL' ||
+        (rosterMajorFilter === 'NONE' ? !s.major : s.major === rosterMajorFilter))
     );
 
     return filtered.sort((a, b) => {
@@ -276,7 +443,45 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ user, onLogo
       if (valA > valB) return rosterSortConfig.direction === 'ASC' ? 1 : -1;
       return 0;
     });
-  }, [students, rosterSearch, rosterSortConfig]);
+  }, [students, rosterSearch, rosterSortConfig, rosterMajorFilter]);
+
+  // Every major already in the roster — drives both the filter dropdown and the
+  // bulk-assign picker, so an existing spelling can be reused instead of retyped.
+  const knownMajors = useMemo(
+    () => Array.from(new Set(students.map(s => s.major).filter((m): m is string => !!m))).sort(),
+    [students]
+  );
+
+  const rosterTotalPages = Math.max(1, Math.ceil(getSortedRoster.length / rosterPageSize));
+  // Clamp rather than store: deleting or filtering can strand the page number past the end.
+  const rosterCurrentPage = Math.min(rosterPage, rosterTotalPages);
+  const pagedRoster = getSortedRoster.slice(
+    (rosterCurrentPage - 1) * rosterPageSize,
+    rosterCurrentPage * rosterPageSize
+  );
+
+  // "Select all" acts on the whole filtered result, not just the visible page — assigning a
+  // major to a search result of 300 students shouldn't need 12 page visits.
+  const allFilteredSelected =
+    getSortedRoster.length > 0 && getSortedRoster.every(s => selectedStudentIds.includes(s.id));
+
+  const toggleSelectAllFiltered = () => {
+    if (allFilteredSelected) {
+      const filteredIds = new Set(getSortedRoster.map(s => s.id));
+      setSelectedStudentIds(prev => prev.filter(id => !filteredIds.has(id)));
+    } else {
+      setSelectedStudentIds(prev => Array.from(new Set([...prev, ...getSortedRoster.map(s => s.id)])));
+    }
+  };
+
+  const toggleSelectStudent = (id: string) => {
+    setSelectedStudentIds(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
+  };
+
+  const startEditStudent = (s: User) => {
+    setEditingStudent(s);
+    setEditDraft({ name: s.name, section: s.section || '', major: s.major || '' });
+  };
 
 
   // --- MONITOR DATA PROCESSING ---
@@ -478,6 +683,11 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ user, onLogo
                                 ⚠️ Left exam view {progress!.tabSwitchCount}x
                              </span>
                           )}
+                          {(progress?.captureAttemptCount || 0) > 0 && (
+                             <span className="text-xs px-2 py-0.5 rounded-full font-bold bg-red-100 text-red-700" title="ตรวจพบการกดปุ่มจับภาพหน้าจอ (ตรวจได้เท่าที่เบราว์เซอร์มองเห็น)">
+                                📸 Capture attempts {progress!.captureAttemptCount}x
+                             </span>
+                          )}
                        </div>
                     </div>
                     <button onClick={() => setInspectStudentId(null)} className="text-gray-400 hover:text-gray-600 font-bold text-xl px-2">&times;</button>
@@ -552,6 +762,36 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ user, onLogo
                    <div>
                       <label className="text-sm font-medium text-gray-700">Duration (Minutes)</label>
                       <input type="number" className="w-full p-2 border rounded" value={editingExam.durationMinutes} onChange={e => setEditingExam({...editingExam, durationMinutes: Number(e.target.value)})} />
+                   </div>
+                   <div className="bg-gray-50 border border-gray-200 rounded-lg p-3 space-y-2">
+                      <p className="text-sm font-medium text-gray-700">การสุ่มลำดับ <span className="text-xs text-gray-400 font-normal">Randomisation</span></p>
+                      {/* Both orders are derived from each student's id, so they stay the same
+                          across refreshes and resumes. Answers are stored against question ids
+                          (and the original option index), so neither affects grading. */}
+                      <label className="flex items-start gap-2 text-sm text-gray-600 cursor-pointer">
+                         <input
+                            type="checkbox"
+                            className="mt-1"
+                            checked={!!editingExam.shuffleQuestions}
+                            onChange={e => setEditingExam({ ...editingExam, shuffleQuestions: e.target.checked })}
+                         />
+                         <span>
+                            สลับลำดับข้อ
+                            <span className="block text-xs text-gray-400">นักศึกษาแต่ละคนเห็นข้อ 1 ไม่เหมือนกัน — Each student gets their own question order</span>
+                         </span>
+                      </label>
+                      <label className="flex items-start gap-2 text-sm text-gray-600 cursor-pointer">
+                         <input
+                            type="checkbox"
+                            className="mt-1"
+                            checked={!!editingExam.shuffleOptions}
+                            onChange={e => setEditingExam({ ...editingExam, shuffleOptions: e.target.checked })}
+                         />
+                         <span>
+                            สลับลำดับตัวเลือกของข้อ MCQ ทุกข้อ
+                            <span className="block text-xs text-gray-400">ระวังข้อที่มีตัวเลือกแบบ "ถูกทุกข้อ" / "ไม่มีข้อถูก" — Shuffles every MCQ's choices</span>
+                         </span>
+                      </label>
                    </div>
                    <div>
                       <label className="text-sm font-medium text-gray-700">Assigned Sections</label>
@@ -659,11 +899,32 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ user, onLogo
                                               <option value="python3">Python 3</option>
                                            </select>
                                         </div>
+                                        {/* 'function' mode compiles the call expression into the source, which only
+                                            the Python harness knows how to build — so it's offered for Python only. */}
+                                        {q.language === 'python3' && (
+                                          <div className="flex items-center gap-2">
+                                             <label className="text-xs font-bold text-blue-700 uppercase">Test Input</label>
+                                             <select
+                                                className="p-1 border rounded text-sm bg-white"
+                                                value={q.inputMode || 'stdin'}
+                                                onChange={(e) => updateQuestion(q.id, { inputMode: e.target.value as CodeInputMode })}
+                                             >
+                                                <option value="stdin">stdin</option>
+                                                <option value="function">Function call</option>
+                                             </select>
+                                          </div>
+                                        )}
                                      </div>
                                   </div>
+                                  {isFunctionMode(q) && (
+                                    <div className="bg-white border border-blue-200 rounded p-2 text-xs text-gray-600">
+                                       <p>ช่องซ้ายคือ <strong>ประโยคเรียกฟังก์ชัน</strong> เช่น <code className="bg-gray-100 px-1 rounded">rectangle_area(4, 5)</code> — นักศึกษาเขียนแค่ตัวฟังก์ชัน ระบบจะเรียกให้เอง และรับได้ทั้งแบบ <code className="bg-gray-100 px-1 rounded">return</code> ค่า หรือ <code className="bg-gray-100 px-1 rounded">print</code> ออกมา</p>
+                                       <p className="text-gray-400 mt-0.5">The left field is a call expression, not stdin. Students write only the function; both returning and printing the answer pass.</p>
+                                    </div>
+                                  )}
                                   {q.testCases?.map((tc, tcIdx) => (
                                     <div key={tcIdx} className="grid grid-cols-2 gap-2 mb-2">
-                                       <input className="p-1 border rounded text-sm font-mono" placeholder="Input" value={tc.input} onChange={(e) => { const newTC = [...(q.testCases || [])]; newTC[tcIdx] = { ...newTC[tcIdx], input: e.target.value }; updateQuestion(q.id, { testCases: newTC }); }} />
+                                       <input className="p-1 border rounded text-sm font-mono" placeholder={isFunctionMode(q) ? "Call e.g. rectangle_area(4, 5)" : "Input"} value={tc.input} onChange={(e) => { const newTC = [...(q.testCases || [])]; newTC[tcIdx] = { ...newTC[tcIdx], input: e.target.value }; updateQuestion(q.id, { testCases: newTC }); }} />
                                        <div className="flex gap-1 items-center">
                                           <input className="flex-1 p-1 border rounded text-sm font-mono" placeholder="Output" value={tc.output} onChange={(e) => { const newTC = [...(q.testCases || [])]; newTC[tcIdx] = { ...newTC[tcIdx], output: e.target.value }; updateQuestion(q.id, { testCases: newTC }); }} />
                                           <label className="flex items-center gap-1 text-xs text-blue-700 font-bold whitespace-nowrap cursor-pointer" title="Hide this test case's input/expected/actual from students; it still counts toward grading">
@@ -736,6 +997,14 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ user, onLogo
                       <Button size="sm" variant={exam.isActive ? 'danger' : 'secondary'} onClick={() => toggleExamStatus(exam.id, exam.isActive)}>{exam.isActive ? 'Close' : 'Open'}</Button>
                       <Button size="sm" variant="primary" onClick={() => handleEditExam(exam)}>Edit / Manage</Button>
                       <Button size="sm" variant="outline" className="col-span-2" onClick={() => { setMonitoringExamId(exam.id); setActiveTab('MONITOR'); }}>Monitor Students</Button>
+                      <button
+                        onClick={() => handleDuplicateExam(exam)}
+                        disabled={isSaving}
+                        title="สร้างสำเนาข้อสอบชุดนี้เพื่อนำไปแก้เป็นอีกชุด"
+                        className="col-span-2 text-sm text-gray-600 hover:bg-gray-50 py-1 rounded border border-gray-200 disabled:opacity-50"
+                      >
+                        📋 Duplicate
+                      </button>
                       <button onClick={() => handleExportResults(exam.id, exam.title)} className="col-span-2 text-sm text-purple-600 hover:bg-purple-50 py-1 rounded border border-purple-200">📄 Export Scores</button>
                       <button onClick={() => handleRecalculateScores(exam.id)} className="col-span-2 text-xs text-blue-500 hover:text-blue-700 mt-1 font-medium">↺ Re-grade Scores</button>
                       <button onClick={() => handleDeleteExam(exam.id)} className="col-span-2 text-xs text-red-400 hover:text-red-600 mt-1">Delete Exam</button>
@@ -748,14 +1017,31 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ user, onLogo
         )}
 
         {activeTab === 'STUDENTS' && (
-          <div className="max-w-4xl mx-auto space-y-6 animate-fade-in">
+          <div className="max-w-6xl mx-auto space-y-6 animate-fade-in">
+            {/* Shared by the bulk-assign field and the edit-student modal */}
+            <datalist id="known-majors">
+               {knownMajors.map(m => <option key={m} value={m} />)}
+            </datalist>
             <Card title="Batch Import Students">
               <div className="space-y-4">
-                <div className="bg-yellow-50 border-l-4 border-yellow-400 p-4">
-                   <p className="text-sm text-yellow-700">Format: <code>StudentID, FullName, SectionID</code></p>
+                <div className="bg-yellow-50 border-l-4 border-yellow-400 p-4 space-y-1">
+                   <p className="text-sm text-yellow-800">รูปแบบ: <code>StudentID, ชื่อ, Section, สาขา</code> — ช่องสาขาจะใส่หรือไม่ใส่ก็ได้</p>
+                   <p className="text-xs text-yellow-700">Format: <code>StudentID, Name, Section, Major</code> — Major is optional. A header row (e.g. <code>studentId,name,section,major</code>) is detected automatically.</p>
+                </div>
+                <div className="flex flex-wrap items-center gap-3">
+                   <label className="inline-flex items-center gap-2 px-4 py-2 rounded-lg border border-purple-200 text-purple-700 text-sm font-medium cursor-pointer hover:bg-purple-50">
+                      📂 เลือกไฟล์ CSV
+                      <input
+                         type="file"
+                         accept=".csv,text/csv"
+                         className="hidden"
+                         onChange={(e) => { handleCsvFile(e.target.files?.[0] || null); e.target.value = ''; }}
+                      />
+                   </label>
+                   <span className="text-xs text-gray-400">หรือวางข้อมูลลงในช่องด้านล่างโดยตรง</span>
                 </div>
                 <textarea className="w-full h-32 p-4 border border-gray-300 rounded-lg font-mono text-sm" placeholder="Paste CSV data here..." value={importText} onChange={(e) => setImportText(e.target.value)}></textarea>
-                <div className="flex justify-between items-center">
+                <div className="flex justify-between items-center gap-4">
                   <span className="text-sm font-medium text-green-600">{importStatus}</span>
                   <Button onClick={handleImportStudents}>Import Data</Button>
                 </div>
@@ -763,19 +1049,72 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ user, onLogo
             </Card>
 
             <Card title={`Student Roster (${students.length})`}>
-              <div className="p-4 bg-gray-50 border-b flex items-center gap-4">
-                 <input 
-                    type="text" 
-                    placeholder="Search Roster..." 
-                    className="flex-1 p-2 border rounded text-sm"
-                    value={rosterSearch}
-                    onChange={(e) => setRosterSearch(e.target.value)}
-                 />
+              <div className="p-4 bg-gray-50 border-b space-y-3">
+                 <div className="flex flex-wrap items-center gap-3">
+                    <input
+                       type="text"
+                       placeholder="ค้นหาจากชื่อ, รหัสนักศึกษา, Section หรือสาขา..."
+                       className="flex-1 min-w-[240px] p-2 border rounded text-sm"
+                       value={rosterSearch}
+                       onChange={(e) => { setRosterSearch(e.target.value); setRosterPage(1); }}
+                    />
+                    <select
+                       className="p-2 border rounded text-sm bg-white"
+                       value={rosterMajorFilter}
+                       onChange={(e) => { setRosterMajorFilter(e.target.value); setRosterPage(1); }}
+                    >
+                       <option value="ALL">ทุกสาขา</option>
+                       <option value="NONE">ยังไม่ระบุสาขา</option>
+                       {knownMajors.map(m => <option key={m} value={m}>{m}</option>)}
+                    </select>
+                    <div className="flex items-center gap-2">
+                       <label className="text-xs text-gray-500 whitespace-nowrap">แสดง</label>
+                       <select
+                          className="p-2 border rounded text-sm bg-white"
+                          value={rosterPageSize}
+                          onChange={(e) => { setRosterPageSize(Number(e.target.value)); setRosterPage(1); }}
+                       >
+                          {[10, 25, 50, 100].map(n => <option key={n} value={n}>{n} แถว</option>)}
+                       </select>
+                    </div>
+                 </div>
+
+                 {selectedStudentIds.length > 0 && (
+                    <div className="flex flex-wrap items-center gap-3 bg-purple-50 border border-purple-200 rounded-lg p-3">
+                       <span className="text-sm font-medium text-purple-800">เลือกแล้ว {selectedStudentIds.length} คน</span>
+                       <input
+                          list="known-majors"
+                          className="p-2 border rounded text-sm flex-1 min-w-[200px]"
+                          placeholder="พิมพ์ชื่อสาขา หรือเลือกจากที่มีอยู่"
+                          value={bulkMajor}
+                          onChange={(e) => setBulkMajor(e.target.value)}
+                       />
+                       <Button size="sm" onClick={handleAssignMajor}>กำหนดสาขา</Button>
+                       <button
+                          onClick={() => handleDeleteStudents(selectedStudentIds)}
+                          className="text-sm text-red-500 hover:text-red-700 font-medium px-2"
+                       >
+                          ลบที่เลือก
+                       </button>
+                       <button onClick={() => setSelectedStudentIds([])} className="text-sm text-gray-500 hover:text-gray-700 px-2">
+                          ยกเลิกการเลือก
+                       </button>
+                    </div>
+                 )}
               </div>
+
               <div className="overflow-x-auto">
                 <table className="w-full text-sm text-left text-gray-500">
                    <thead className="text-xs text-gray-700 uppercase bg-gray-50">
                      <tr>
+                       <th className="px-4 py-3 w-10">
+                          <input
+                             type="checkbox"
+                             checked={allFilteredSelected}
+                             onChange={toggleSelectAllFiltered}
+                             title="เลือกทั้งหมดตามผลการค้นหา/ตัวกรองปัจจุบัน"
+                          />
+                       </th>
                        <th className="px-6 py-3 cursor-pointer hover:bg-gray-100" onClick={() => handleRosterSort('studentId')}>
                           Student ID {rosterSortConfig.key === 'studentId' && (rosterSortConfig.direction === 'ASC' ? '▲' : '▼')}
                        </th>
@@ -785,23 +1124,64 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ user, onLogo
                        <th className="px-6 py-3 cursor-pointer hover:bg-gray-100" onClick={() => handleRosterSort('section')}>
                           Section {rosterSortConfig.key === 'section' && (rosterSortConfig.direction === 'ASC' ? '▲' : '▼')}
                        </th>
+                       <th className="px-6 py-3 cursor-pointer hover:bg-gray-100" onClick={() => handleRosterSort('major')}>
+                          สาขา {rosterSortConfig.key === 'major' && (rosterSortConfig.direction === 'ASC' ? '▲' : '▼')}
+                       </th>
+                       <th className="px-6 py-3 text-right">จัดการ</th>
                      </tr>
                    </thead>
                    <tbody>
-                     {getSortedRoster.length === 0 ? (
-                       <tr><td colSpan={3} className="px-6 py-4 text-center">No students found.</td></tr>
+                     {pagedRoster.length === 0 ? (
+                       <tr><td colSpan={6} className="px-6 py-4 text-center">No students found.</td></tr>
                      ) : (
-                       getSortedRoster.map(s => (
-                         <tr key={s.id} className="bg-white border-b hover:bg-gray-50 transition-colors">
+                       pagedRoster.map(s => (
+                         <tr key={s.id} className={`border-b hover:bg-gray-50 transition-colors ${selectedStudentIds.includes(s.id) ? 'bg-purple-50' : 'bg-white'}`}>
+                           <td className="px-4 py-4">
+                              <input type="checkbox" checked={selectedStudentIds.includes(s.id)} onChange={() => toggleSelectStudent(s.id)} />
+                           </td>
                            <td className="px-6 py-4 font-bold">{s.studentId}</td>
                            <td className="px-6 py-4">{s.name}</td>
                            <td className="px-6 py-4"><span className="bg-purple-100 text-purple-800 text-xs px-2 py-1 rounded-full">{s.section || 'N/A'}</span></td>
+                           <td className="px-6 py-4">
+                              {s.major
+                                ? <span className="bg-blue-100 text-blue-800 text-xs px-2 py-1 rounded-full">{s.major}</span>
+                                : <span className="text-xs text-gray-300">—</span>}
+                           </td>
+                           <td className="px-6 py-4 text-right whitespace-nowrap">
+                              <button onClick={() => startEditStudent(s)} className="text-purple-600 hover:text-purple-800 text-xs font-medium px-2">แก้ไข</button>
+                              <button onClick={() => handleDeleteStudents([s.id])} className="text-red-400 hover:text-red-600 text-xs font-medium px-2">ลบ</button>
+                           </td>
                          </tr>
                        ))
                      )}
                    </tbody>
                 </table>
               </div>
+
+              {getSortedRoster.length > 0 && (
+                 <div className="flex flex-wrap items-center justify-between gap-3 p-4 border-t bg-gray-50 text-sm">
+                    <span className="text-gray-500">
+                       แสดง {(rosterCurrentPage - 1) * rosterPageSize + 1}–{Math.min(rosterCurrentPage * rosterPageSize, getSortedRoster.length)} จาก {getSortedRoster.length} รายชื่อ
+                    </span>
+                    <div className="flex items-center gap-2">
+                       <button
+                          onClick={() => setRosterPage(rosterCurrentPage - 1)}
+                          disabled={rosterCurrentPage <= 1}
+                          className="px-3 py-1 rounded border bg-white disabled:opacity-40 disabled:cursor-not-allowed hover:bg-gray-100"
+                       >
+                          ← ก่อนหน้า
+                       </button>
+                       <span className="text-gray-600">หน้า {rosterCurrentPage} / {rosterTotalPages}</span>
+                       <button
+                          onClick={() => setRosterPage(rosterCurrentPage + 1)}
+                          disabled={rosterCurrentPage >= rosterTotalPages}
+                          className="px-3 py-1 rounded border bg-white disabled:opacity-40 disabled:cursor-not-allowed hover:bg-gray-100"
+                       >
+                          ถัดไป →
+                       </button>
+                    </div>
+                 </div>
+              )}
             </Card>
           </div>
         )}
@@ -903,6 +1283,12 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ user, onLogo
                            </div>
                          )}
 
+                         {(progress?.captureAttemptCount || 0) > 0 && (
+                           <div className="text-xs font-bold text-red-700 bg-red-50 border border-red-200 rounded-lg px-2 py-1 w-fit" title="ตรวจพบการกดปุ่มจับภาพหน้าจอ (ตรวจได้เท่าที่เบราว์เซอร์มองเห็น)">
+                             📸 Capture attempts {progress!.captureAttemptCount}x
+                           </div>
+                         )}
+
                          {canReopen && (
                            <button
                              onClick={(e) => { e.stopPropagation(); handleReopenStudent(user.studentId!); }}
@@ -928,6 +1314,41 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ user, onLogo
         
         {/* INSPECT MODAL */}
         {renderInspectModal()}
+
+        {/* EDIT STUDENT MODAL */}
+        {editingStudent && (
+          <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+            <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl animate-fade-in">
+              <h2 className="text-xl font-bold text-gray-900 mb-0.5">แก้ไขข้อมูลนักศึกษา</h2>
+              <p className="text-xs text-gray-400 mb-4">Edit student details</p>
+              <div className="space-y-3">
+                <div>
+                  <label className="text-xs font-bold text-gray-500 uppercase">Student ID</label>
+                  {/* Read-only: student_id is the login key and the FK student_progress rows
+                      point at, so editing it would orphan every attempt they've made. */}
+                  <input className="w-full p-2 border rounded bg-gray-100 text-gray-500" value={editingStudent.studentId || ''} disabled />
+                  <p className="text-xs text-gray-400 mt-0.5">รหัสนักศึกษาแก้ไม่ได้ (ใช้เป็นรหัสเข้าสอบและผูกกับประวัติการสอบ) — ถ้าผิดให้ลบแล้วนำเข้าใหม่</p>
+                </div>
+                <div>
+                  <label className="text-xs font-bold text-gray-500 uppercase">ชื่อ</label>
+                  <input className="w-full p-2 border rounded" value={editDraft.name} onChange={(e) => setEditDraft({ ...editDraft, name: e.target.value })} />
+                </div>
+                <div>
+                  <label className="text-xs font-bold text-gray-500 uppercase">Section</label>
+                  <input className="w-full p-2 border rounded" value={editDraft.section} onChange={(e) => setEditDraft({ ...editDraft, section: e.target.value })} />
+                </div>
+                <div>
+                  <label className="text-xs font-bold text-gray-500 uppercase">สาขา</label>
+                  <input list="known-majors" className="w-full p-2 border rounded" value={editDraft.major} onChange={(e) => setEditDraft({ ...editDraft, major: e.target.value })} />
+                </div>
+              </div>
+              <div className="flex gap-3 justify-end mt-6">
+                <Button variant="secondary" onClick={() => setEditingStudent(null)}>ยกเลิก</Button>
+                <Button onClick={handleUpdateStudent}>บันทึก</Button>
+              </div>
+            </div>
+          </div>
+        )}
 
       </main>
     </div>

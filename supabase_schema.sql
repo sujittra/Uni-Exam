@@ -11,6 +11,7 @@ create table public.users (
   role text not null check (role in ('TEACHER', 'STUDENT')),
   student_id text unique, -- Used for login (e.g., '64001'), null for teachers
   section text, -- Group/Class section (e.g., 'SEC01'), null for teachers
+  major text, -- Student's major/programme (e.g., 'วิศวกรรมซอฟต์แวร์'), null for teachers
   password text -- Added for Teacher login (Simple text storage for this prototype)
 );
 
@@ -22,7 +23,12 @@ create table public.exams (
   description text,
   duration_minutes int not null default 60,
   is_active boolean default false,
-  assigned_sections text[] default '{}'::text[] -- Array of strings e.g. ['SEC01', 'SEC02']
+  assigned_sections text[] default '{}'::text[], -- Array of strings e.g. ['SEC01', 'SEC02']
+  -- Per-student randomisation. The order is derived from the student's id, so it is
+  -- stable across refreshes and resumes; answers are stored against question ids (and,
+  -- for MCQ, the ORIGINAL option index), so grading is unaffected by either shuffle.
+  shuffle_questions boolean default false, -- Each student sees the questions in a different order
+  shuffle_options boolean default false -- Each student sees each MCQ's choices in a different order
 );
 
 -- QUESTIONS: Linked to Exams
@@ -39,6 +45,11 @@ create table public.questions (
   hidden_test_case_count int default 0, -- Denormalized count of hidden cases (safe to expose; real data lives in question_hidden_test_cases)
   language text check (language in ('java', 'python3')) default 'java', -- For JAVA (code) questions: programming language
   allow_file_upload boolean default true, -- For JAVA (code) questions: whether students may upload a code file instead of typing
+  -- How a code question feeds each test case to the student's program:
+  --   'stdin'    -> test_cases.input is piped to standard input (original behaviour)
+  --   'function' -> test_cases.input is a call expression, e.g. rectangle_area(4, 5),
+  --                 evaluated after the student's code (Python only)
+  input_mode text check (input_mode in ('stdin', 'function')) default 'stdin',
   accepted_answers text[] -- For SHORT_ANSWER: Array of valid answers e.g. ['java', 'Java']
 );
 
@@ -73,6 +84,7 @@ create table public.student_progress (
   started_at timestamp with time zone, -- NEW: To track strict timing
   auto_submitted boolean default false, -- True if submitted because the timer ran out, not a manual submit
   tab_switch_count int default 0, -- Times the student left the exam view (tab/app switch, exited fullscreen)
+  capture_attempt_count int default 0, -- Times a screen-capture shortcut was detected (best effort: the OS eats some of them)
   -- Ensure one active attempt per student per exam
   unique(student_id, exam_id)
 );

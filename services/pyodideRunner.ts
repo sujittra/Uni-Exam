@@ -1,4 +1,7 @@
-import { TestCase } from '../types';
+import { CodeInputMode, TestCase } from '../types';
+// Same harness the server-side judge uses, so "ทดสอบ" and "ส่งคำตอบ" evaluate a function
+// call test case identically.
+import { buildFunctionCallSource, describeEmptyCall } from '../api/_pyHarness';
 
 // Runs student Python code entirely in the browser via a Web Worker running Pyodide.
 // Zero network round-trip and no external API quota — safe to call as often as the
@@ -74,7 +77,8 @@ const normalize = (str: any) => String(str || '').replace(/\s+/g, ' ').trim();
 // so the console looks consistent regardless of which one ran.
 export const testPythonCode = async (
   code: string,
-  visibleTestCases: TestCase[]
+  visibleTestCases: TestCase[],
+  inputMode: CodeInputMode = 'stdin'
 ): Promise<{ passed: boolean; output: string }> => {
   if (!code.trim()) {
     return { passed: false, output: 'Error: Code is empty.' };
@@ -85,10 +89,20 @@ export const testPythonCode = async (
 
   let finalOutput = 'Running in your browser (Pyodide)...\n\n';
   let allPassed = true;
+  const functionMode = inputMode === 'function';
 
   for (let i = 0; i < visibleTestCases.length; i++) {
     const tc = visibleTestCases[i];
-    const result = await runOnce(code, tc.input);
+    if (functionMode && !tc.input.trim()) {
+      finalOutput += `${describeEmptyCall(i)}\n`;
+      allPassed = false;
+      continue;
+    }
+    // In 'function' mode the input is a call expression compiled into the source rather
+    // than piped to stdin, so the program is run with no stdin at all.
+    const result = functionMode
+      ? await runOnce(buildFunctionCallSource(code, tc.input), '')
+      : await runOnce(code, tc.input);
 
     if (result.timedOut) {
       finalOutput += `[Timed Out]\n${result.error}\n`;
@@ -108,7 +122,7 @@ export const testPythonCode = async (
     const passed = normalizedActual === normalizedExpected;
     if (!passed) allPassed = false;
 
-    finalOutput += `Test Case ${i + 1}: Input [${tc.input}] \n   -> Expected [${normalizedExpected}] \n   -> Actual   [${normalizedActual}] (${passed ? 'PASS' : 'FAIL'})\n`;
+    finalOutput += `Test Case ${i + 1}: ${functionMode ? 'Call' : 'Input'} [${tc.input}] \n   -> Expected [${normalizedExpected}] \n   -> Actual   [${normalizedActual}] (${passed ? 'PASS' : 'FAIL'})\n`;
   }
 
   return { passed: allPassed, output: finalOutput };

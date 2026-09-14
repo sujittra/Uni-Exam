@@ -146,6 +146,46 @@ ADD COLUMN IF NOT EXISTS tab_switch_count int default 0;
 NOTIFY pgrst, 'reload schema';
 ```
 
+### เพิ่งอัปเดต: สาขาของนักศึกษา + โหมด test case แบบเรียกฟังก์ชัน
+ถ้า Database สร้างไว้ก่อนหน้านี้ ต้องเพิ่ม 2 คอลัมน์นี้:
+
+```sql
+-- สาขาของนักศึกษา (ใช้ในหน้า Roster: กรอง, assign ทีละหลายคน, คอลัมน์ที่ 4 ของ CSV)
+ALTER TABLE public.users
+ADD COLUMN IF NOT EXISTS major text;
+
+-- โหมดรับ input ของโจทย์เขียนโค้ด:
+--   'stdin'    = เดิม (ป้อน test case input เข้าทาง standard input)
+--   'function' = test case input คือ "ประโยคเรียกฟังก์ชัน" เช่น rectangle_area(4, 5)
+--                (รองรับเฉพาะ Python)
+ALTER TABLE public.questions
+ADD COLUMN IF NOT EXISTS input_mode text default 'stdin';
+
+ALTER TABLE public.questions
+DROP CONSTRAINT IF EXISTS questions_input_mode_check;
+
+ALTER TABLE public.questions
+ADD CONSTRAINT questions_input_mode_check CHECK (input_mode in ('stdin', 'function'));
+
+NOTIFY pgrst, 'reload schema';
+```
+
+### เพิ่งอัปเดต: สลับลำดับข้อ/ตัวเลือก + นับความพยายาม capture หน้าจอ
+```sql
+-- สลับลำดับข้อ และสลับลำดับตัวเลือกของข้อ MCQ (ตั้งค่าต่อชุดข้อสอบ)
+ALTER TABLE public.exams
+ADD COLUMN IF NOT EXISTS shuffle_questions boolean default false;
+
+ALTER TABLE public.exams
+ADD COLUMN IF NOT EXISTS shuffle_options boolean default false;
+
+-- จำนวนครั้งที่ตรวจพบว่านักศึกษาพยายามจับภาพหน้าจอระหว่างสอบ
+ALTER TABLE public.student_progress
+ADD COLUMN IF NOT EXISTS capture_attempt_count int default 0;
+
+NOTIFY pgrst, 'reload schema';
+```
+
 ## หมายเหตุ
 - ระบบ Dashboard ใช้อาศัยฟีเจอร์ **Realtime** ซึ่งสคริปต์ SQL ได้เปิดใช้งานให้แล้วในบรรทัด `alter publication supabase_realtime...`
 - ระบบ Login ปัจจุบันออกแบบมาให้ใช้ `student_id` ในตาราง `users` ในการตรวจสอบสิทธิ์แบบง่าย (เพื่อให้ตรงกับ requirement นำเข้า Excel) โดยไม่ต้องใช้ Supabase Auth (Email/Password) ที่ซับซ้อนเกินไปสำหรับเฟสแรก

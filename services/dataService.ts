@@ -105,6 +105,7 @@ const mapUser = (u: any): User => ({
   role: u.role as UserRole,
   studentId: u.student_id,
   section: u.section,
+  major: u.major || undefined,
   createdBy: u.created_by
 });
 
@@ -114,6 +115,8 @@ const mapExam = (e: any): Exam => ({
   description: e.description,
   durationMinutes: e.duration_minutes,
   isActive: e.is_active,
+  shuffleQuestions: !!e.shuffle_questions,
+  shuffleOptions: !!e.shuffle_options,
   assignedSections: e.assigned_sections || [],
   createdBy: e.created_by, // Map DB column
   questions: (e.questions || []).map(mapQuestion).sort((a: Question, b: Question) => a.text.localeCompare(b.text))
@@ -131,6 +134,7 @@ const mapQuestion = (q: any): Question => ({
   hiddenTestCaseCount: q.hidden_test_case_count || 0,
   language: q.language || 'java',
   allowFileUpload: q.allow_file_upload !== false,
+  inputMode: q.input_mode === 'function' ? 'function' : 'stdin',
   acceptedAnswers: q.accepted_answers
 });
 
@@ -170,6 +174,7 @@ const mapProgress = (p: any, userName: string = ''): StudentProgress => ({
   startedAt: p.started_at ? new Date(p.started_at).getTime() : undefined,
   autoSubmitted: !!p.auto_submitted,
   tabSwitchCount: p.tab_switch_count || 0,
+  captureAttemptCount: p.capture_attempt_count || 0,
   lastUpdated: new Date(p.updated_at).getTime()
 });
 
@@ -379,14 +384,17 @@ export const getStudents = async (teacherId?: string): Promise<User[]> => {
   return allStudents;
 };
 
+export interface StudentImportRow { id: string; name: string; section: string; major?: string }
+
 // UPDATED: Import students with teacher ownership
-export const importStudents = async (teacherId: string, studentData: {id: string, name: string, section: string}[]) => {
+export const importStudents = async (teacherId: string, studentData: StudentImportRow[]) => {
   if (supabase) {
     const { error } = await supabase.from('users').upsert(
       studentData.map(s => ({ 
           student_id: s.id, 
           name: s.name, 
           section: s.section, 
+          major: s.major || null,
           role: 'STUDENT',
           created_by: teacherId // Link student to teacher
       })),
@@ -402,6 +410,7 @@ export const importStudents = async (teacherId: string, studentData: {id: string
     name: s.name,
     studentId: s.id,
     section: s.section,
+    major: s.major,
     role: UserRole.STUDENT,
     createdBy: teacherId
   }));
@@ -413,6 +422,54 @@ export const importStudents = async (teacherId: string, studentData: {id: string
   });
   
   saveMockData(STORAGE_KEYS.USERS, Array.from(existingMap.values()));
+};
+
+// Roster row edit. student_id is the login key AND the foreign key student_progress points
+// at, so changing it would orphan a student's attempts — it stays read-only here.
+export const updateStudent = async (
+  id: string,
+  updates: { name?: string; section?: string; major?: string }
+): Promise<void> => {
+  const payload = {
+    ...(updates.name !== undefined ? { name: updates.name } : {}),
+    ...(updates.section !== undefined ? { section: updates.section } : {}),
+    ...(updates.major !== undefined ? { major: updates.major || null } : {}),
+  };
+  if (Object.keys(payload).length === 0) return;
+
+  if (supabase) {
+    const { error } = await supabase.from('users').update(payload).eq('id', id);
+    if (error) throw new Error("Update failed: " + error.message);
+    return;
+  }
+  const mockUsers = getMockUsers();
+  saveMockData(STORAGE_KEYS.USERS, mockUsers.map(u => u.id === id ? { ...u, ...updates } : u));
+};
+
+// Assigns one major to many students at once (the roster's bulk "assign สาขา" action).
+export const assignMajorToStudents = async (ids: string[], major: string): Promise<void> => {
+  if (ids.length === 0) return;
+  if (supabase) {
+    const { error } = await supabase.from('users').update({ major: major || null }).in('id', ids);
+    if (error) throw new Error("Assign failed: " + error.message);
+    return;
+  }
+  const idSet = new Set(ids);
+  const mockUsers = getMockUsers();
+  saveMockData(STORAGE_KEYS.USERS, mockUsers.map(u => idSet.has(u.id) ? { ...u, major } : u));
+};
+
+// Deleting a student cascades to their student_progress rows (FK is ON DELETE CASCADE),
+// so their exam attempts and scores go with them.
+export const deleteStudents = async (ids: string[]): Promise<void> => {
+  if (ids.length === 0) return;
+  if (supabase) {
+    const { error } = await supabase.from('users').delete().in('id', ids);
+    if (error) throw new Error("Delete failed: " + error.message);
+    return;
+  }
+  const idSet = new Set(ids);
+  saveMockData(STORAGE_KEYS.USERS, getMockUsers().filter(u => !idSet.has(u.id)));
 };
 
 // ==========================================
@@ -515,6 +572,8 @@ export const saveExam = async (exam: Exam): Promise<Exam> => {
       description: exam.description,
       duration_minutes: exam.durationMinutes,
       is_active: exam.isActive,
+      shuffle_questions: !!exam.shuffleQuestions,
+      shuffle_options: !!exam.shuffleOptions,
       assigned_sections: exam.assignedSections,
       created_by: exam.createdBy // Save ownership
     };
@@ -544,6 +603,7 @@ export const saveExam = async (exam: Exam): Promise<Exam> => {
         test_cases: q.testCases?.filter(tc => !tc.hidden),
         language: q.language,
         allow_file_upload: q.type === QuestionType.JAVA_CODE ? (q.allowFileUpload !== false) : undefined,
+        input_mode: q.type === QuestionType.JAVA_CODE ? (q.inputMode || 'stdin') : undefined,
         accepted_answers: q.acceptedAnswers
       }));
       const { data: insertedQuestions, error: qError } = await supabase.from('questions').insert(questionsPayload).select();
@@ -643,6 +703,7 @@ export const submitStudentProgress = async (progress: StudentProgress): Promise<
         status: progress.status,
         auto_submitted: !!progress.autoSubmitted,
         tab_switch_count: progress.tabSwitchCount || 0,
+        capture_attempt_count: progress.captureAttemptCount || 0,
         updated_at: new Date().toISOString()
       };
       if (progress.startedAt) {

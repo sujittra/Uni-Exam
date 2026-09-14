@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { User, Exam, Question, QuestionType, StudentProgress } from '../types';
 import { getExamsForStudent, submitStudentProgress, compileCode, getStudentProgress, calculateScore } from '../services/dataService';
 import { testPythonCode } from '../services/pyodideRunner';
+import { examForStudent, buildOptionOrders } from '../services/shuffle';
 import { Button } from '../components/Button';
 import { Card } from '../components/Card';
 
@@ -12,6 +13,32 @@ interface StudentExamProps {
 
 // Helper for LocalStorage Keys
 const getStorageKey = (studentId: string, examId: string) => `uniexam_prog_${studentId}_${examId}`;
+
+// Proctoring relies on the Fullscreen API, which iOS doesn't support for arbitrary
+// elements in ANY browser (Chrome on iPhone/iPad is Safari's engine underneath).
+// Students are told to sit the exam in desktop Chrome; anything else gets a warning.
+const supportsFullscreen = () =>
+   !!document.fullscreenEnabled && !!document.documentElement.requestFullscreen;
+
+// Edge / Opera / Samsung Internet all carry "Chrome/" in their UA — real Chrome is the
+// one without their own token.
+const isChrome = () => {
+   const ua = navigator.userAgent;
+   return /Chrome\//.test(ua) && !/Edg\/|EdgA\/|OPR\/|SamsungBrowser\/|CriOS\//.test(ua);
+};
+
+const isExamBrowserSupported = () => supportsFullscreen() && isChrome();
+
+// Applied to everything that shows the QUESTION itself (text, image, choices, test cases)
+// so it can't be selected, copied, dragged out or right-click-saved. The student's own
+// answer fields deliberately don't get this — they still need normal copy/paste to work.
+const noCopy = (className = '') => ({
+   className: `select-none ${className}`.trim(),
+   onContextMenu: (e: React.MouseEvent) => e.preventDefault(),
+   onCopy: (e: React.ClipboardEvent) => e.preventDefault(),
+   onCut: (e: React.ClipboardEvent) => e.preventDefault(),
+   onDragStart: (e: React.DragEvent) => e.preventDefault(),
+});
 
 export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
   const [availableExams, setAvailableExams] = useState<Exam[]>([]);
@@ -28,8 +55,14 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
   // Counts exits from the exam view (tab switch, app switch, or leaving fullscreen) —
   // logged for the teacher, never enforced client-side (can't truly block tab-switching)
   const tabSwitchCountRef = useRef<number>(0);
+  // Counts detected screen-capture attempts. Best effort — the OS swallows some of these
+  // shortcuts before the page ever sees them, so this is evidence, never enforcement.
+  const captureAttemptCountRef = useRef<number>(0);
   // Suppresses the fullscreen-exit violation we trigger ourselves when the exam ends
   const isEndingExamRef = useRef(false);
+  // Display order of each MCQ's choices for THIS student, as indices into the original
+  // options array. Computed once per session so a re-render can't reshuffle mid-question.
+  const [optionOrders, setOptionOrders] = useState<Record<string, number[]>>({});
   
   const [timeLeft, setTimeLeft] = useState(0);
   const [examStartTime, setExamStartTime] = useState<number>(0);
@@ -38,6 +71,8 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
   const [showTOS, setShowTOS] = useState<Exam | null>(null);
   const [showCodeInfoModal, setShowCodeInfoModal] = useState(false);
   const hasShownCodeInfoRef = useRef(false);
+  const [browserSupported] = useState(isExamBrowserSupported);
+  const [captureWarning, setCaptureWarning] = useState(false);
   
   // Compiler State
   const [codeOutput, setCodeOutput] = useState<string>('');
@@ -96,6 +131,51 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
       document.removeEventListener('fullscreenchange', handleFullscreenChange);
     };
   }, [activeExam, currentQuestionIdx, examStartTime]);
+
+  // Screen-capture detection. Deliberately NOT presented as a block: a web page cannot
+  // stop an OS screenshot, and macOS in particular swallows Cmd+Shift+3/4 before the page
+  // sees the keystroke. What lands here is logged for the teacher, same as a tab switch.
+  useEffect(() => {
+    if (!activeExam) return;
+
+    const isCaptureShortcut = (e: KeyboardEvent) => {
+      if (e.key === 'PrintScreen') return true; // Windows/Linux
+      // macOS screenshot shortcuts: Cmd+Shift+3/4/5 (and Ctrl variants that copy to clipboard)
+      if (e.metaKey && e.shiftKey && ['3', '4', '5'].includes(e.key)) return true;
+      // Windows Snipping Tool: Win+Shift+S
+      if (e.shiftKey && e.key.toLowerCase() === 's' && (e.metaKey || e.getModifierState?.('Meta'))) return true;
+      return false;
+    };
+
+    // We listen on both keydown and keyup because PrintScreen only fires keyup in some
+    // browsers — so one physical press can reach us twice. Collapse anything within this
+    // window into a single attempt; an inflated count would misrepresent the student.
+    let lastCaptureAt = 0;
+    const recordCapture = (e: KeyboardEvent) => {
+      if (!isCaptureShortcut(e)) return;
+      e.preventDefault();
+      const now = Date.now();
+      if (now - lastCaptureAt < 800) return;
+      lastCaptureAt = now;
+      captureAttemptCountRef.current += 1;
+      setCaptureWarning(true);
+      syncProgress(activeExam.id, currentQuestionIdx, answersRef.current, 'IN_PROGRESS', examStartTime, true);
+    };
+
+    document.addEventListener('keyup', recordCapture);
+    document.addEventListener('keydown', recordCapture);
+    return () => {
+      document.removeEventListener('keyup', recordCapture);
+      document.removeEventListener('keydown', recordCapture);
+    };
+  }, [activeExam, currentQuestionIdx, examStartTime]);
+
+  // Auto-hides the "we saw that" toast a few seconds after the last capture attempt.
+  useEffect(() => {
+    if (!captureWarning) return;
+    const t = setTimeout(() => setCaptureWarning(false), 4000);
+    return () => clearTimeout(t);
+  }, [captureWarning]);
 
   // Update code output when switching questions
   useEffect(() => {
@@ -186,11 +266,16 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
        await syncProgress(exam.id, 0, {}, 'IDLE', startTime, true);
     }
 
-    setActiveExam(exam);
+    // Questions (and, below, MCQ choices) are reordered per student when the exam says so.
+    // Both orders are derived from the student's id, so they survive a refresh or a resume.
+    const studentExam = examForStudent(exam, user.studentId!);
+    setActiveExam(studentExam);
+    setOptionOrders(buildOptionOrders(studentExam, user.studentId!));
     setExamStartTime(startTime);
     setAnswers(finalData?.answers || {});
     answersRef.current = finalData?.answers || {};
     tabSwitchCountRef.current = finalData?.tabSwitchCount || 0;
+    captureAttemptCountRef.current = finalData?.captureAttemptCount || 0;
     isEndingExamRef.current = false;
     hasShownCodeInfoRef.current = false;
     setCurrentQuestionIdx(finalData?.currentQuestionIndex || 0);
@@ -215,6 +300,7 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
       startedAt, // Persist start time
       autoSubmitted,
       tabSwitchCount: tabSwitchCountRef.current,
+      captureAttemptCount: captureAttemptCountRef.current,
       lastUpdated: Date.now()
     };
     
@@ -294,7 +380,7 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
     setIsTesting(true);
     setCodeOutput('Starting Python in your browser...');
 
-    const result = await testPythonCode(code, visibleTestCases);
+    const result = await testPythonCode(code, visibleTestCases, q.inputMode || 'stdin');
     setCodeOutput(result.output);
     setIsTesting(false);
   };
@@ -378,12 +464,19 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
             </div>
          </div>
 
+         {captureWarning && (
+            <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 bg-red-600 text-white px-4 py-3 rounded-xl shadow-lg max-w-md text-center">
+               <p className="font-bold">ตรวจพบการพยายามจับภาพหน้าจอ — บันทึกแจ้งอาจารย์แล้ว</p>
+               <p className="text-xs text-red-100 mt-0.5">A screen-capture attempt was detected and has been logged for your instructor.</p>
+            </div>
+         )}
+
          {/* Exam Body */}
          <div className="container mx-auto px-4 py-6 flex-1 max-w-3xl">
             <div className="flex flex-col gap-6">
 
                {/* Question Panel */}
-               <div className="space-y-4 bg-white rounded-2xl shadow-sm border border-gray-200 p-6">
+               <div {...noCopy('space-y-4 bg-white rounded-2xl shadow-sm border border-gray-200 p-6')}>
                   <div className="flex justify-between items-end">
                      <span className="text-sm font-bold text-gray-400">Question {currentQuestionIdx + 1} of {activeExam.questions.length}</span>
                      {syncingStatus && <span className="text-xs text-purple-500 animate-pulse">{syncingStatus}</span>}
@@ -400,16 +493,23 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
                      <h3 className="text-sm font-bold text-gray-500 uppercase mb-4">Your Answer</h3>
                      
                      {q.type === QuestionType.MULTIPLE_CHOICE && (
-                        <div className="space-y-3">
-                           {q.options?.map((opt, idx) => (
-                              <label key={idx} className={`flex items-center gap-4 p-4 rounded-xl border-2 cursor-pointer transition-all ${answers[q.id] === String(idx) ? 'border-purple-500 bg-purple-50' : 'border-gray-100 hover:border-purple-200'}`}>
-                                 <div className={`w-5 h-5 rounded-full border-2 flex items-center justify-center ${answers[q.id] === String(idx) ? 'border-purple-500' : 'border-gray-300'}`}>
-                                    {answers[q.id] === String(idx) && <div className="w-2.5 h-2.5 rounded-full bg-purple-500"></div>}
-                                 </div>
-                                 <input type="radio" name="mcq" className="hidden" checked={answers[q.id] === String(idx)} onChange={() => handleAnswerChange(String(idx))} />
-                                 <span className="text-gray-700">{opt}</span>
-                              </label>
-                           ))}
+                        <div {...noCopy('space-y-3')}>
+                           {/* `origIdx` is the choice's position in the question's own options
+                               array. That — not the position on screen — is what gets stored,
+                               so a shuffled exam still grades against the same answer key. */}
+                           {(optionOrders[q.id] || q.options?.map((_, i) => i) || []).map(origIdx => {
+                              const opt = q.options?.[origIdx];
+                              const selected = answers[q.id] === String(origIdx);
+                              return (
+                                 <label key={origIdx} className={`flex items-center gap-4 p-4 rounded-xl border-2 cursor-pointer transition-all ${selected ? 'border-purple-500 bg-purple-50' : 'border-gray-100 hover:border-purple-200'}`}>
+                                    <div className={`w-5 h-5 rounded-full border-2 flex items-center justify-center ${selected ? 'border-purple-500' : 'border-gray-300'}`}>
+                                       {selected && <div className="w-2.5 h-2.5 rounded-full bg-purple-500"></div>}
+                                    </div>
+                                    <input type="radio" name="mcq" className="hidden" checked={selected} onChange={() => handleAnswerChange(String(origIdx))} />
+                                    <span className="text-gray-700">{opt}</span>
+                                 </label>
+                              );
+                           })}
                         </div>
                      )}
 
@@ -442,12 +542,18 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
                            </div>
 
                            {((q.testCases && q.testCases.length > 0) || (q.hiddenTestCaseCount || 0) > 0) && (
-                              <div className="bg-gray-50 border border-gray-200 rounded-xl p-3 space-y-2">
+                              <div {...noCopy('bg-gray-50 border border-gray-200 rounded-xl p-3 space-y-2')}>
                                  <p className="text-xs font-bold text-gray-500 uppercase">Test Cases</p>
+                                 {q.inputMode === 'function' && (
+                                    <div>
+                                       <p className="text-xs text-gray-600">เขียนเฉพาะฟังก์ชัน ระบบจะเรียกฟังก์ชันของคุณตามที่แสดงด้านล่างแล้วเทียบกับผลลัพธ์ที่คาดหวัง (จะ return ค่า หรือ print ออกมาก็ได้)</p>
+                                       <p className="text-xs text-gray-400">Write the function only — we call it as shown below and compare the result. Returning the value or printing it both work.</p>
+                                    </div>
+                                 )}
                                  <div className="space-y-1.5">
                                     {q.testCases?.map((tc, tcIdx) => (
                                        <div key={tcIdx} className="grid grid-cols-2 gap-2 text-xs font-mono">
-                                          <div className="bg-white border rounded px-2 py-1 truncate"><span className="text-gray-400">Input: </span>{tc.input}</div>
+                                          <div className="bg-white border rounded px-2 py-1 truncate"><span className="text-gray-400">{q.inputMode === 'function' ? 'Call: ' : 'Input: '}</span>{tc.input}</div>
                                           <div className="bg-white border rounded px-2 py-1 truncate"><span className="text-gray-400">Output: </span>{tc.output}</div>
                                        </div>
                                     ))}
@@ -556,6 +662,16 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
       </header>
 
       <main className="container mx-auto px-4 py-8">
+         {!browserSupported && (
+            <div className="mb-6 bg-amber-50 border border-amber-200 text-amber-900 px-4 py-3 rounded-xl flex gap-3">
+               <span className="text-lg leading-none mt-0.5">⚠️</span>
+               <div>
+                  <p className="font-bold">กรุณาทำข้อสอบด้วย Google Chrome บนคอมพิวเตอร์</p>
+                  <p className="text-sm mt-0.5">เบราว์เซอร์ที่คุณใช้อยู่ไม่รองรับโหมดเต็มจอ (Fullscreen) ที่ระบบคุมสอบใช้ — รวมถึงทุกเบราว์เซอร์บน iPhone/iPad หากทำข้อสอบต่อ ระบบจะยังบันทึกการออกจากหน้าสอบตามปกติ</p>
+                  <p className="text-xs text-amber-700/80 mt-1">Please take your exams in Google Chrome on a computer. Your current browser doesn't support the fullscreen mode used for proctoring (this includes every browser on iPhone/iPad). If you continue anyway, leaving the exam view is still logged.</p>
+               </div>
+            </div>
+         )}
          {syncingStatus && (
             <div className="mb-4 bg-blue-50 text-blue-700 px-4 py-3 rounded-lg flex items-center gap-2 animate-pulse">
                <span>↻</span> {syncingStatus}
@@ -620,6 +736,11 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
             <div className="bg-white rounded-2xl max-w-lg w-full p-6 shadow-2xl animate-fade-in">
                <h2 className="text-xl font-bold text-gray-900 mb-0.5">กติกาการสอบ</h2>
                <p className="text-xs text-gray-400 mb-4">Exam Rules &amp; Instructions</p>
+               <div className={`text-sm mb-3 p-4 rounded-lg border ${browserSupported ? 'bg-blue-50 border-blue-100 text-blue-900' : 'bg-amber-50 border-amber-200 text-amber-900'}`}>
+                  <p className="font-bold">{browserSupported ? '🖥 ใช้ Google Chrome บนคอมพิวเตอร์เท่านั้น' : '⚠️ เบราว์เซอร์นี้ไม่รองรับ — กรุณาเปิดด้วย Google Chrome บนคอมพิวเตอร์'}</p>
+                  <p className="mt-0.5">ระบบคุมสอบต้องใช้โหมดเต็มจอ (Fullscreen) ซึ่งทุกเบราว์เซอร์บน iPhone/iPad ไม่รองรับ</p>
+                  <p className={`text-xs mt-1 ${browserSupported ? 'text-blue-700/80' : 'text-amber-700/80'}`}>Take this exam in Google Chrome on a computer. Proctoring requires fullscreen mode, which no browser on iPhone/iPad supports.</p>
+               </div>
                <div className="space-y-3 text-gray-600 text-sm mb-6 bg-gray-50 p-4 rounded-lg">
                   <div>
                      <p>1. คุณมีเวลา <strong>{showTOS.durationMinutes} นาที</strong> ในการทำข้อสอบนี้</p>
@@ -642,7 +763,17 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
                      <p className="text-xs text-gray-400">The exam will enter fullscreen mode automatically. Switching tabs/screens or pressing Esc to exit fullscreen will be logged as "leaving the exam" and shown to your instructor.</p>
                   </div>
                   <div>
-                     <p>6. การทุจริตหรือพยายามทุจริตจะถูกบันทึกไว้</p>
+                     <p>6. ห้ามคัดลอกโจทย์ ระบบปิดการเลือกข้อความและคลิกขวาในส่วนของโจทย์ไว้ หากกดปุ่มจับภาพหน้าจอ ระบบจะบันทึกไว้และแจ้งให้อาจารย์ทราบ</p>
+                     <p className="text-xs text-gray-400">Copying the question text is disabled (selection and right-click are turned off). Pressing a screen-capture shortcut is logged and reported to your instructor.</p>
+                  </div>
+                  {(showTOS.shuffleQuestions || showTOS.shuffleOptions) && (
+                     <div>
+                        <p>7. {showTOS.shuffleQuestions && showTOS.shuffleOptions ? 'ลำดับข้อและลำดับตัวเลือกของแต่ละคนไม่เหมือนกัน' : showTOS.shuffleQuestions ? 'ลำดับข้อของแต่ละคนไม่เหมือนกัน' : 'ลำดับตัวเลือกของแต่ละคนไม่เหมือนกัน'} — ข้อที่ {showTOS.shuffleQuestions ? '1 ของคุณอาจไม่ใช่ข้อที่ 1 ของเพื่อน' : 'ตัวเลือก ก. ของคุณอาจไม่ใช่ ก. ของเพื่อน'}</p>
+                        <p className="text-xs text-gray-400">{showTOS.shuffleQuestions && showTOS.shuffleOptions ? 'Both the question order and the choice order differ from student to student.' : showTOS.shuffleQuestions ? 'The question order differs from student to student.' : 'The order of the choices differs from student to student.'}</p>
+                     </div>
+                  )}
+                  <div>
+                     <p>{showTOS.shuffleQuestions || showTOS.shuffleOptions ? '8' : '7'}. การทุจริตหรือพยายามทุจริตจะถูกบันทึกไว้</p>
                      <p className="text-xs text-gray-400">Malpractice or cheating attempts will be logged.</p>
                   </div>
                </div>
