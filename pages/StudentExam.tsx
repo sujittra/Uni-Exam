@@ -13,6 +13,21 @@ interface StudentExamProps {
 // Helper for LocalStorage Keys
 const getStorageKey = (studentId: string, examId: string) => `uniexam_prog_${studentId}_${examId}`;
 
+// Proctoring relies on the Fullscreen API, which iOS doesn't support for arbitrary
+// elements in ANY browser (Chrome on iPhone/iPad is Safari's engine underneath).
+// Students are told to sit the exam in desktop Chrome; anything else gets a warning.
+const supportsFullscreen = () =>
+   !!document.fullscreenEnabled && !!document.documentElement.requestFullscreen;
+
+// Edge / Opera / Samsung Internet all carry "Chrome/" in their UA — real Chrome is the
+// one without their own token.
+const isChrome = () => {
+   const ua = navigator.userAgent;
+   return /Chrome\//.test(ua) && !/Edg\/|EdgA\/|OPR\/|SamsungBrowser\/|CriOS\//.test(ua);
+};
+
+const isExamBrowserSupported = () => supportsFullscreen() && isChrome();
+
 export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
   const [availableExams, setAvailableExams] = useState<Exam[]>([]);
   const [examStatuses, setExamStatuses] = useState<Record<string, StudentProgress>>({});
@@ -38,6 +53,7 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
   const [showTOS, setShowTOS] = useState<Exam | null>(null);
   const [showCodeInfoModal, setShowCodeInfoModal] = useState(false);
   const hasShownCodeInfoRef = useRef(false);
+  const [browserSupported] = useState(isExamBrowserSupported);
   
   // Compiler State
   const [codeOutput, setCodeOutput] = useState<string>('');
@@ -556,6 +572,16 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
       </header>
 
       <main className="container mx-auto px-4 py-8">
+         {!browserSupported && (
+            <div className="mb-6 bg-amber-50 border border-amber-200 text-amber-900 px-4 py-3 rounded-xl flex gap-3">
+               <span className="text-lg leading-none mt-0.5">⚠️</span>
+               <div>
+                  <p className="font-bold">กรุณาทำข้อสอบด้วย Google Chrome บนคอมพิวเตอร์</p>
+                  <p className="text-sm mt-0.5">เบราว์เซอร์ที่คุณใช้อยู่ไม่รองรับโหมดเต็มจอ (Fullscreen) ที่ระบบคุมสอบใช้ — รวมถึงทุกเบราว์เซอร์บน iPhone/iPad หากทำข้อสอบต่อ ระบบจะยังบันทึกการออกจากหน้าสอบตามปกติ</p>
+                  <p className="text-xs text-amber-700/80 mt-1">Please take your exams in Google Chrome on a computer. Your current browser doesn't support the fullscreen mode used for proctoring (this includes every browser on iPhone/iPad). If you continue anyway, leaving the exam view is still logged.</p>
+               </div>
+            </div>
+         )}
          {syncingStatus && (
             <div className="mb-4 bg-blue-50 text-blue-700 px-4 py-3 rounded-lg flex items-center gap-2 animate-pulse">
                <span>↻</span> {syncingStatus}
@@ -620,6 +646,11 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
             <div className="bg-white rounded-2xl max-w-lg w-full p-6 shadow-2xl animate-fade-in">
                <h2 className="text-xl font-bold text-gray-900 mb-0.5">กติกาการสอบ</h2>
                <p className="text-xs text-gray-400 mb-4">Exam Rules &amp; Instructions</p>
+               <div className={`text-sm mb-3 p-4 rounded-lg border ${browserSupported ? 'bg-blue-50 border-blue-100 text-blue-900' : 'bg-amber-50 border-amber-200 text-amber-900'}`}>
+                  <p className="font-bold">{browserSupported ? '🖥 ใช้ Google Chrome บนคอมพิวเตอร์เท่านั้น' : '⚠️ เบราว์เซอร์นี้ไม่รองรับ — กรุณาเปิดด้วย Google Chrome บนคอมพิวเตอร์'}</p>
+                  <p className="mt-0.5">ระบบคุมสอบต้องใช้โหมดเต็มจอ (Fullscreen) ซึ่งทุกเบราว์เซอร์บน iPhone/iPad ไม่รองรับ</p>
+                  <p className={`text-xs mt-1 ${browserSupported ? 'text-blue-700/80' : 'text-amber-700/80'}`}>Take this exam in Google Chrome on a computer. Proctoring requires fullscreen mode, which no browser on iPhone/iPad supports.</p>
+               </div>
                <div className="space-y-3 text-gray-600 text-sm mb-6 bg-gray-50 p-4 rounded-lg">
                   <div>
                      <p>1. คุณมีเวลา <strong>{showTOS.durationMinutes} นาที</strong> ในการทำข้อสอบนี้</p>
