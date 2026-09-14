@@ -683,6 +683,11 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ user, onLogo
                                 ⚠️ Left exam view {progress!.tabSwitchCount}x
                              </span>
                           )}
+                          {(progress?.captureAttemptCount || 0) > 0 && (
+                             <span className="text-xs px-2 py-0.5 rounded-full font-bold bg-red-100 text-red-700" title="ตรวจพบการกดปุ่มจับภาพหน้าจอ (ตรวจได้เท่าที่เบราว์เซอร์มองเห็น)">
+                                📸 Capture attempts {progress!.captureAttemptCount}x
+                             </span>
+                          )}
                        </div>
                     </div>
                     <button onClick={() => setInspectStudentId(null)} className="text-gray-400 hover:text-gray-600 font-bold text-xl px-2">&times;</button>
@@ -757,6 +762,36 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ user, onLogo
                    <div>
                       <label className="text-sm font-medium text-gray-700">Duration (Minutes)</label>
                       <input type="number" className="w-full p-2 border rounded" value={editingExam.durationMinutes} onChange={e => setEditingExam({...editingExam, durationMinutes: Number(e.target.value)})} />
+                   </div>
+                   <div className="bg-gray-50 border border-gray-200 rounded-lg p-3 space-y-2">
+                      <p className="text-sm font-medium text-gray-700">การสุ่มลำดับ <span className="text-xs text-gray-400 font-normal">Randomisation</span></p>
+                      {/* Both orders are derived from each student's id, so they stay the same
+                          across refreshes and resumes. Answers are stored against question ids
+                          (and the original option index), so neither affects grading. */}
+                      <label className="flex items-start gap-2 text-sm text-gray-600 cursor-pointer">
+                         <input
+                            type="checkbox"
+                            className="mt-1"
+                            checked={!!editingExam.shuffleQuestions}
+                            onChange={e => setEditingExam({ ...editingExam, shuffleQuestions: e.target.checked })}
+                         />
+                         <span>
+                            สลับลำดับข้อ
+                            <span className="block text-xs text-gray-400">นักศึกษาแต่ละคนเห็นข้อ 1 ไม่เหมือนกัน — Each student gets their own question order</span>
+                         </span>
+                      </label>
+                      <label className="flex items-start gap-2 text-sm text-gray-600 cursor-pointer">
+                         <input
+                            type="checkbox"
+                            className="mt-1"
+                            checked={!!editingExam.shuffleOptions}
+                            onChange={e => setEditingExam({ ...editingExam, shuffleOptions: e.target.checked })}
+                         />
+                         <span>
+                            สลับลำดับตัวเลือกของข้อ MCQ ทุกข้อ
+                            <span className="block text-xs text-gray-400">ระวังข้อที่มีตัวเลือกแบบ "ถูกทุกข้อ" / "ไม่มีข้อถูก" — Shuffles every MCQ's choices</span>
+                         </span>
+                      </label>
                    </div>
                    <div>
                       <label className="text-sm font-medium text-gray-700">Assigned Sections</label>
@@ -1245,6 +1280,12 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ user, onLogo
                          {(progress?.tabSwitchCount || 0) > 0 && (
                            <div className="text-xs font-bold text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-2 py-1 w-fit">
                              ⚠️ Left exam view {progress!.tabSwitchCount}x
+                           </div>
+                         )}
+
+                         {(progress?.captureAttemptCount || 0) > 0 && (
+                           <div className="text-xs font-bold text-red-700 bg-red-50 border border-red-200 rounded-lg px-2 py-1 w-fit" title="ตรวจพบการกดปุ่มจับภาพหน้าจอ (ตรวจได้เท่าที่เบราว์เซอร์มองเห็น)">
+                             📸 Capture attempts {progress!.captureAttemptCount}x
                            </div>
                          )}
 

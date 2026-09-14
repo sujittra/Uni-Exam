@@ -23,7 +23,12 @@ create table public.exams (
   description text,
   duration_minutes int not null default 60,
   is_active boolean default false,
-  assigned_sections text[] default '{}'::text[] -- Array of strings e.g. ['SEC01', 'SEC02']
+  assigned_sections text[] default '{}'::text[], -- Array of strings e.g. ['SEC01', 'SEC02']
+  -- Per-student randomisation. The order is derived from the student's id, so it is
+  -- stable across refreshes and resumes; answers are stored against question ids (and,
+  -- for MCQ, the ORIGINAL option index), so grading is unaffected by either shuffle.
+  shuffle_questions boolean default false, -- Each student sees the questions in a different order
+  shuffle_options boolean default false -- Each student sees each MCQ's choices in a different order
 );
 
 -- QUESTIONS: Linked to Exams
@@ -79,6 +84,7 @@ create table public.student_progress (
   started_at timestamp with time zone, -- NEW: To track strict timing
   auto_submitted boolean default false, -- True if submitted because the timer ran out, not a manual submit
   tab_switch_count int default 0, -- Times the student left the exam view (tab/app switch, exited fullscreen)
+  capture_attempt_count int default 0, -- Times a screen-capture shortcut was detected (best effort: the OS eats some of them)
   -- Ensure one active attempt per student per exam
   unique(student_id, exam_id)
 );

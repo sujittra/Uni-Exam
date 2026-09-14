@@ -115,6 +115,8 @@ const mapExam = (e: any): Exam => ({
   description: e.description,
   durationMinutes: e.duration_minutes,
   isActive: e.is_active,
+  shuffleQuestions: !!e.shuffle_questions,
+  shuffleOptions: !!e.shuffle_options,
   assignedSections: e.assigned_sections || [],
   createdBy: e.created_by, // Map DB column
   questions: (e.questions || []).map(mapQuestion).sort((a: Question, b: Question) => a.text.localeCompare(b.text))
@@ -172,6 +174,7 @@ const mapProgress = (p: any, userName: string = ''): StudentProgress => ({
   startedAt: p.started_at ? new Date(p.started_at).getTime() : undefined,
   autoSubmitted: !!p.auto_submitted,
   tabSwitchCount: p.tab_switch_count || 0,
+  captureAttemptCount: p.capture_attempt_count || 0,
   lastUpdated: new Date(p.updated_at).getTime()
 });
 
@@ -569,6 +572,8 @@ export const saveExam = async (exam: Exam): Promise<Exam> => {
       description: exam.description,
       duration_minutes: exam.durationMinutes,
       is_active: exam.isActive,
+      shuffle_questions: !!exam.shuffleQuestions,
+      shuffle_options: !!exam.shuffleOptions,
       assigned_sections: exam.assignedSections,
       created_by: exam.createdBy // Save ownership
     };
@@ -698,6 +703,7 @@ export const submitStudentProgress = async (progress: StudentProgress): Promise<
         status: progress.status,
         auto_submitted: !!progress.autoSubmitted,
         tab_switch_count: progress.tabSwitchCount || 0,
+        capture_attempt_count: progress.captureAttemptCount || 0,
         updated_at: new Date().toISOString()
       };
       if (progress.startedAt) {

@@ -60,6 +60,8 @@ export interface Exam {
   questions: Question[];
   durationMinutes: number;
   isActive: boolean;
+  shuffleQuestions?: boolean; // Each student sees the questions in their own order
+  shuffleOptions?: boolean; // Each student sees each MCQ's choices in their own order
   createdBy?: string; // New: Track which teacher created this exam
 }
 
@@ -74,5 +76,6 @@ export interface StudentProgress {
   startedAt?: number; // Timestamp when student started the exam
   autoSubmitted?: boolean; // True if the exam was auto-submitted because time ran out, rather than a manual submit
   tabSwitchCount?: number; // Times the student left the exam view (tab/app switch, or exited forced fullscreen)
+  captureAttemptCount?: number; // Times a screen-capture shortcut was detected (best effort — the OS swallows some)
   lastUpdated: number;
 }

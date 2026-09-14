@@ -170,6 +170,22 @@ ADD CONSTRAINT questions_input_mode_check CHECK (input_mode in ('stdin', 'functi
 NOTIFY pgrst, 'reload schema';
 ```
 
+### เพิ่งอัปเดต: สลับลำดับข้อ/ตัวเลือก + นับความพยายาม capture หน้าจอ
+```sql
+-- สลับลำดับข้อ และสลับลำดับตัวเลือกของข้อ MCQ (ตั้งค่าต่อชุดข้อสอบ)
+ALTER TABLE public.exams
+ADD COLUMN IF NOT EXISTS shuffle_questions boolean default false;
+
+ALTER TABLE public.exams
+ADD COLUMN IF NOT EXISTS shuffle_options boolean default false;
+
+-- จำนวนครั้งที่ตรวจพบว่านักศึกษาพยายามจับภาพหน้าจอระหว่างสอบ
+ALTER TABLE public.student_progress
+ADD COLUMN IF NOT EXISTS capture_attempt_count int default 0;
+
+NOTIFY pgrst, 'reload schema';
+```
+
 ## หมายเหตุ
 - ระบบ Dashboard ใช้อาศัยฟีเจอร์ **Realtime** ซึ่งสคริปต์ SQL ได้เปิดใช้งานให้แล้วในบรรทัด `alter publication supabase_realtime...`
 - ระบบ Login ปัจจุบันออกแบบมาให้ใช้ `student_id` ในตาราง `users` ในการตรวจสอบสิทธิ์แบบง่าย (เพื่อให้ตรงกับ requirement นำเข้า Excel) โดยไม่ต้องใช้ Supabase Auth (Email/Password) ที่ซับซ้อนเกินไปสำหรับเฟสแรก
