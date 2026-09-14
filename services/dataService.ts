@@ -200,19 +200,17 @@ export const calculateScore = (exam: Exam, answers: Record<string, any>): number
          const isCorrect = q.acceptedAnswers?.some(a => normalizeAnswerText(a) === studentAns);
          if (isCorrect) totalScore += q.score;
       } else if (q.type === QuestionType.JAVA_CODE) {
-         // IMPROVED GRADING: 
-         if (typeof ans === 'object') {
-             // 1. Strict Check: Passed all test cases
-             if (ans.passed === true) {
-                 totalScore += q.score;
-             } 
-             // 2. Fallback Check: Length check (e.g. wrote > 20 chars)
-             // This ensures students get points if they wrote code but forgot to run it or failed compilation
-             else if (ans.code && String(ans.code).length > 20) {
-                 totalScore += q.score; 
-             }
-         } else if (typeof ans === 'string' && ans.length > 20) {
-             // Legacy string fallback
+         // A code question is worth its points only when the judge says every test case
+         // passed — the same thing "ส่งคำตอบ" reports to the student.
+         //
+         // There used to be a fallback here that awarded full marks for any answer longer
+         // than 20 characters, so that a student who wrote code but never submitted it
+         // wasn't left at zero. It also awarded full marks to code that failed to compile
+         // or produced the wrong output, which made the score meaningless. Length is not
+         // evidence of correctness; if an answer deserves credit without passing, that is
+         // a judgement for the teacher to make, not something to infer from a character
+         // count.
+         if (typeof ans === 'object' && ans.passed === true) {
              totalScore += q.score;
          }
       }
