@@ -200,6 +200,38 @@ const rescoreExam = async (examId: string) => {
   return updates.length;
 };
 
+// Who is sitting this exam right now.
+//
+// `is_active` alone isn't the question worth asking — an exam can be open with nobody in
+// it, and editing that is harmless. What matters is whether anyone's attempt is live.
+const examActivity = async (examId: string) => {
+  const { data: exams } = await pgSelect<any[]>('exams', `id=eq.${examId}&select=is_active,title`);
+  const { data: rows } = await pgSelect<any[]>('student_progress', `exam_id=eq.${examId}&select=status`);
+  const progress = rows || [];
+  return {
+    isActive: !!exams?.[0]?.is_active,
+    title: exams?.[0]?.title || '',
+    inProgress: progress.filter((p: any) => p.status === 'IN_PROGRESS').length,
+    completed: progress.filter((p: any) => p.status === 'COMPLETED').length,
+  };
+};
+
+// Changing an exam, or rescoring it, while people are still answering is how a sitting
+// gets damaged: the questions move under them, and their marks are recomputed from a paper
+// that is no longer the one they were given. The client warns before either, but a warning
+// on a screen is not a guarantee — a stale tab doesn't know the exam opened, and a second
+// click lands before the dialog is read. So the server refuses too, and the caller has to
+// say plainly that it means it.
+const assertSafeToModify = async (examId: string, payload: any, what: string) => {
+  if (payload?.acknowledgeActive === true) return;
+  const activity = await examActivity(examId);
+  if (!activity.isActive || activity.inProgress === 0) return;
+  throw new HttpError(
+    409,
+    `ข้อสอบ "${activity.title}" กำลังเปิดสอบอยู่ และมีนักศึกษากำลังทำอยู่ ${activity.inProgress} คน — ${what}ตอนนี้จะกระทบคนที่กำลังสอบ ปิดข้อสอบก่อน หรือยืนยันอีกครั้งถ้าตั้งใจทำจริง`
+  );
+};
+
 // ==========================================
 // ACTIONS
 // ==========================================
@@ -363,6 +395,7 @@ const actions: Record<string, Handler> = {
     } else {
       examId = asUuid(exam.id, 'exam.id');
       await assertOwnsExam(me, examId);
+      await assertSafeToModify(examId, payload, 'การแก้ข้อสอบ');
       const { error } = await pgUpdate('exams', `id=eq.${examId}`, examPayload);
       if (error) throw new HttpError(500, error.message);
     }
@@ -721,8 +754,17 @@ const actions: Record<string, Handler> = {
     const me = requireTeacher(session);
     const examId = asUuid(payload?.examId, 'examId');
     await assertOwnsExam(me, examId);
+    await assertSafeToModify(examId, payload, 'การคำนวณคะแนนใหม่');
     const updated = await rescoreExam(examId);
     return { updated };
+  },
+
+  // What the dashboard asks before offering to edit or re-grade.
+  'teacher.examActivity': async (payload, session) => {
+    const me = requireTeacher(session);
+    const examId = asUuid(payload?.examId, 'examId');
+    await assertOwnsExam(me, examId);
+    return await examActivity(examId);
   },
 
   'teacher.reopenProgress': async (payload, session) => {

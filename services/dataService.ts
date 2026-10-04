@@ -238,9 +238,32 @@ export const calculateScore = (exam: Exam, answers: Record<string, any>): number
 // ==========================================
 // RECALCULATION SERVICE
 // ==========================================
-export const recalculateExamScores = async (examId: string): Promise<void> => {
+export interface ExamActivity {
+  isActive: boolean;
+  title: string;
+  inProgress: number;
+  completed: number;
+}
+
+// Whether anyone is sitting this exam right now. Asked before offering to edit or re-grade
+// it: `isActive` on its own says little, since an exam can be open with nobody in it.
+export const getExamActivity = async (examId: string): Promise<ExamActivity> => {
+  if (!USE_MOCK) return await call<ExamActivity>('teacher.examActivity', { examId });
+  const exam = getMockExams().find(e => e.id === examId);
+  const rows = getMockProgress().filter(p => p.examId === examId);
+  return {
+    isActive: !!exam?.isActive,
+    title: exam?.title || '',
+    inProgress: rows.filter(p => p.status === 'IN_PROGRESS').length,
+    completed: rows.filter(p => p.status === 'COMPLETED').length,
+  };
+};
+
+// acknowledgeActive carries the teacher's "yes, I mean it" past the server's refusal to
+// touch an exam people are still answering.
+export const recalculateExamScores = async (examId: string, acknowledgeActive = false): Promise<void> => {
   if (!USE_MOCK) {
-    await call('teacher.recalculate', { examId });
+    await call('teacher.recalculate', { examId, acknowledgeActive });
     return;
   }
 
@@ -490,9 +513,9 @@ export const getExamsForTeacher = async (teacherId?: string): Promise<Exam[]> =>
   return mockExams;
 };
 
-export const saveExam = async (exam: Exam): Promise<Exam> => {
+export const saveExam = async (exam: Exam, acknowledgeActive = false): Promise<Exam> => {
   if (!USE_MOCK) {
-    const { examId } = await call<{ examId: string }>('teacher.saveExam', { exam });
+    const { examId } = await call<{ examId: string }>('teacher.saveExam', { exam, acknowledgeActive });
     return { ...exam, id: examId };
   }
 

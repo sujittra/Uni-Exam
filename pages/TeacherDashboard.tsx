@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { User, Exam, Question, QuestionType, StudentProgress, CodeLanguage, CodeInputMode } from '../types';
-import { saveExam, deleteExam, getExamsForTeacher, getLiveProgress, importStudents, updateExamStatus, getExamResults, uploadExamImage, getStudents, recalculateExamScores, reopenStudentProgress, updateStudent, deleteStudents, assignMajorToStudents, isAssignedToStudent, StudentImportRow, QuestionStat, getStudentAnswers, setQuestionScore, StudentAnswers } from '../services/dataService';
+import { saveExam, deleteExam, getExamsForTeacher, getLiveProgress, importStudents, updateExamStatus, getExamResults, uploadExamImage, getStudents, recalculateExamScores, reopenStudentProgress, updateStudent, deleteStudents, assignMajorToStudents, isAssignedToStudent, StudentImportRow, QuestionStat, getStudentAnswers, setQuestionScore, StudentAnswers, getExamActivity } from '../services/dataService';
 import { examForStudent } from '../services/shuffle';
 import { loadView, saveView } from '../services/session';
 import { Card } from '../components/Card';
@@ -10,6 +10,10 @@ interface TeacherDashboardProps {
   user: User;
   onLogout: () => void;
 }
+
+// A saved exam has a real uuid; one being created still carries a temporary id like
+// "e1726380000000", and has nobody sitting it to warn about.
+const UUID_LIKE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 type SortOption = 'ID' | 'NAME' | 'SECTION' | 'STATUS' | 'PROGRESS';
 type SortDirection = 'ASC' | 'DESC';
@@ -245,15 +249,16 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ user, onLogo
     if (!editingExam) return;
     if (!editingExam.title.trim()) return alert("Exam title is required");
     
+    // A new exam has nobody sitting it yet, so there is nothing to warn about.
+    const live = UUID_LIKE.test(editingExam.id) ? await confirmIfExamLive(editingExam.id, 'แก้ข้อสอบ') : false;
+    if (live === null) return;
+
     setIsSaving(true);
     try {
-      // 1. Save the exam definition
-      const savedExam = await saveExam(editingExam);
-      
-      // 2. Automatically Re-calculate scores for all students who took this exam
-      //    (This ensures the DB scores match the new answer key immediately)
-      await recalculateExamScores(savedExam.id);
-      
+      // Saving re-grades the exam on the server, so the stored scores match the new answer
+      // key immediately — no separate call, and no second chance to race the students.
+      await saveExam(editingExam, live === true);
+
       setEditingExam(null);
       loadExams();
     } catch (e: any) {
@@ -263,10 +268,44 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ user, onLogo
     }
   };
 
+  // Asks the server who is actually sitting this exam, and makes the teacher say yes twice
+  // if anyone is. Returns false to abandon the action, or the acknowledgement to pass on.
+  //
+  // Editing a paper people are answering moves the questions under them; re-grading one
+  // recomputes their marks from a paper that is no longer the one they were given. Neither
+  // is forbidden — sometimes a typo has to be fixed mid-exam — but neither should happen by
+  // accident, so the server refuses both unless this acknowledgement comes with them.
+  const confirmIfExamLive = async (examId: string, action: string): Promise<boolean | null> => {
+    let activity;
+    try {
+      activity = await getExamActivity(examId);
+    } catch {
+      return false; // treat an unknown state as "not live" rather than blocking the teacher
+    }
+    if (!activity.isActive || activity.inProgress === 0) return false;
+
+    const ok = window.confirm(
+      `⚠️ "${activity.title}" กำลังเปิดสอบอยู่\n\n` +
+      `มีนักศึกษากำลังทำข้อสอบอยู่ ${activity.inProgress} คน (ส่งแล้ว ${activity.completed} คน)\n\n` +
+      `${action}ตอนนี้จะกระทบคนที่กำลังสอบ:\n` +
+      `• แก้ข้อสอบ = ข้อและตัวเลือกเปลี่ยนระหว่างที่เขากำลังตอบ\n` +
+      `• คำนวณคะแนนใหม่ = คิดคะแนนจากข้อสอบชุดที่เขาไม่ได้ทำ\n\n` +
+      `แนะนำให้กด Close ปิดข้อสอบก่อน แล้วค่อยทำ\n\n` +
+      `ยืนยันว่าจะ${action}ทั้งที่ยังเปิดสอบอยู่?`
+    );
+    return ok ? true : null;
+  };
+
   const handleRecalculateScores = async (examId: string) => {
+    const live = await confirmIfExamLive(examId, 'คำนวณคะแนนใหม่');
+    if (live === null) return;
     if (!confirm("This will re-grade all students based on the current answer key. Continue?")) return;
-    await recalculateExamScores(examId);
-    alert("Scores updated successfully.");
+    try {
+      await recalculateExamScores(examId, live === true);
+      alert("Scores updated successfully.");
+    } catch (e: any) {
+      alert(e?.message || String(e));
+    }
   };
 
   const handleImportStudents = async () => {
@@ -907,6 +946,19 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ user, onLogo
                  </div>
               </div>
            </div>
+           {/* The exam can be opened while this editor sits unsaved, so the warning belongs
+               here too, next to the button that would commit the change. */}
+           {editingExam.isActive && (
+              <div className="bg-amber-100 border-b-2 border-amber-300">
+                 <div className="container mx-auto px-4 py-3 max-w-4xl">
+                    <p className="text-sm font-bold text-amber-900">🔴 ข้อสอบชุดนี้กำลังเปิดสอบอยู่</p>
+                    <p className="text-xs text-amber-800 mt-0.5">
+                       ถ้ากด Save ตอนนี้ ข้อและตัวเลือกจะเปลี่ยนระหว่างที่นักศึกษากำลังตอบ และคะแนนจะถูกคิดใหม่
+                       จากข้อสอบชุดที่เขาไม่ได้ทำ — ถ้ามีคนกำลังสอบอยู่ ระบบจะถามยืนยันอีกครั้งก่อนบันทึก
+                    </p>
+                 </div>
+              </div>
+           )}
            <div className="container mx-auto px-4 py-8 max-w-4xl space-y-6">
               <Card title="Exam Details">
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -1194,6 +1246,18 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ user, onLogo
                       </div>
                       <span className="text-xs text-gray-400">{exam.questions.length} Questions</span>
                     </div>
+                    {/* Open exams get this before any of the buttons below it: editing or
+                        re-grading one that people are sitting damages their attempt, and
+                        the Close button right there is almost always what was wanted. */}
+                    {exam.isActive && (
+                      <div className="mb-3 bg-amber-50 border border-amber-200 rounded-xl p-2.5">
+                        <p className="text-xs font-bold text-amber-800">🔴 กำลังเปิดสอบอยู่</p>
+                        <p className="text-xs text-amber-700 mt-0.5 leading-relaxed">
+                          อย่าแก้ข้อสอบหรือกด Re-grade ตอนนี้ — ข้อจะเปลี่ยนระหว่างที่นักศึกษากำลังตอบ
+                          และคะแนนจะถูกคิดจากข้อสอบชุดที่เขาไม่ได้ทำ กด Close ก่อน
+                        </p>
+                      </div>
+                    )}
                     <div className="grid grid-cols-2 gap-2">
                       <Button size="sm" variant={exam.isActive ? 'danger' : 'secondary'} onClick={() => toggleExamStatus(exam.id, exam.isActive)}>{exam.isActive ? 'Close' : 'Open'}</Button>
                       <Button size="sm" variant="primary" onClick={() => handleEditExam(exam)}>Edit / Manage</Button>
