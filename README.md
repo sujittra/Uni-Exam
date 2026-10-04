@@ -48,7 +48,29 @@ roster row), what a set of answers is worth, and whether a code answer passed (f
 
 None of these belong in `.env.local` — that file is bundled into the browser.
 
-The "ทดสอบ" test button runs Python in the browser via Pyodide and needs no configuration.
+## The two Pythons
+
+A code question is run by two different interpreters, and they disagree:
+
+| Button | Runs on | Version |
+| --- | --- | --- |
+| ทดสอบ | Pyodide, in the browser | 3.12 |
+| ส่งคำตอบ | Sphere Engine compiler 116 | **3.5.3** (January 2017) |
+
+The account's other Python 3 entries (119 "Python 3 ML/AI", 126 "Python 3 nbc") answer
+`Compiler version not found`, so there is nothing newer to point `COMPILER_IDS.python3` at.
+Write model answers against 3.5: an f-string, `1_000`, `x: int = 0`, `:=`, `list[int]` and
+`match` all run in the browser and are syntax errors on submit — and a code answer scores
+only on a passing verdict, so that is a zero.
+
+[api/_pySyntax.ts](api/_pySyntax.ts) warns about those cases on both sides: above the test
+results in the browser, while there is still time to rewrite the line, and above a
+compilation error from the judge, where a 3.5 traceback says only "invalid syntax".
+
+Two teacher-only endpoints answer "is grading going to work today" without an exam to find
+out in: `GET /api/judge` lists the account's compilers (no submission quota spent), and
+`GET /api/judge?version=<compilerId>` reports what that compiler says `sys.version` is (one
+submission).
 
 ## Deploying this change to an existing database
 
