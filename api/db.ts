@@ -169,26 +169,34 @@ const rescoreExam = async (examId: string) => {
     questions.filter((q) => q.type === 'JAVA').map((q) => q.id)
   );
 
+  // Only the score is written back, one row at a time.
+  //
+  // This used to upsert the whole row, answers included, from the snapshot read a moment
+  // earlier — so a student who saved while a teacher pressed Re-grade had that save
+  // overwritten with their older answers. Nothing here needs to touch anything but the
+  // number it just worked out. A teacher's per-question decisions are left exactly where
+  // they are, which is what lets them survive a re-grade at all.
   const updates = progress.map((p: any) => ({
-    student_id: p.student_id,
-    exam_id: examId,
-    // A teacher's per-question decision survives a re-grade — that is the point of keeping
-    // it beside the answers rather than folded into the stored total.
+    studentId: p.student_id,
     score: scoreFor(questions, safeParseJSON(p.answers), p.student_id, verdicts, p.started_at, safeParseJSON(p.score_overrides)),
-    score_overrides: safeParseJSON(p.score_overrides),
-    // The upsert replaces the whole row, so everything else has to be carried over.
-    current_question_index: p.current_question_index,
-    answers: safeParseJSON(p.answers),
-    status: p.status,
-    started_at: p.started_at,
-    auto_submitted: p.auto_submitted,
-    tab_switch_count: p.tab_switch_count,
-    capture_attempt_count: p.capture_attempt_count,
-    updated_at: new Date().toISOString(),
   }));
 
-  const { error } = await pgUpsert('student_progress', updates, 'student_id,exam_id');
-  if (error) throw new HttpError(500, error.message);
+  // In batches, so a class of a hundred doesn't open a hundred connections at once.
+  const BATCH = 20;
+  for (let i = 0; i < updates.length; i += BATCH) {
+    const results = await Promise.all(
+      updates.slice(i, i + BATCH).map((u) =>
+        pgUpdate(
+          'student_progress',
+          `exam_id=eq.${examId}&student_id=eq.${encodeURIComponent(u.studentId)}`,
+          { score: u.score }
+        )
+      )
+    );
+    const failure = results.find((r) => r.error)?.error;
+    if (failure) throw new HttpError(500, failure.message);
+  }
+
   return updates.length;
 };
 
