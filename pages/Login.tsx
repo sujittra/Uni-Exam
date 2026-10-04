@@ -18,10 +18,15 @@ export const Login: React.FC<LoginProps> = ({ onLogin }) => {
   const [error, setError] = useState('');
   const [successMsg, setSuccessMsg] = useState('');
   const [loading, setLoading] = useState(false);
+  // Creating a teacher account needs an invite code that only the server knows
+  // (TEACHER_SIGNUP_CODE). Sign-up used to be open to anyone who loaded this page, which
+  // put every exam and every answer key one form submission away.
+  const [inviteCode, setInviteCode] = useState('');
 
   const resetForm = () => {
     setIdentifier('');
     setPassword('');
+    setInviteCode('');
     setError('');
     setSuccessMsg('');
     setIsRegistering(false);
@@ -46,10 +51,11 @@ export const Login: React.FC<LoginProps> = ({ onLogin }) => {
       } 
       else if (role === UserRole.TEACHER) {
         if (isRegistering) {
-            await registerTeacher(identifier, password);
+            await registerTeacher(identifier, password, inviteCode);
             setSuccessMsg('Registration successful! Please login.');
             setIsRegistering(false);
             setPassword('');
+            setInviteCode('');
         } else {
             const user = await loginTeacher(identifier, password);
             if (user) onLogin(user);
@@ -149,6 +155,26 @@ export const Login: React.FC<LoginProps> = ({ onLogin }) => {
                     autoComplete="new-password"
                     required
                   />
+                </div>
+              )}
+
+              {role === UserRole.TEACHER && isRegistering && (
+                <div>
+                  <label className="block text-sm font-semibold text-gray-700 mb-2">
+                    รหัสเชิญ (Invite Code)
+                  </label>
+                  <input
+                    type="password"
+                    className="w-full p-3 bg-gray-50 border border-gray-200 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-purple-500 outline-none transition-all"
+                    placeholder="ขอรหัสจากผู้ดูแลระบบ"
+                    value={inviteCode}
+                    onChange={(e) => setInviteCode(e.target.value)}
+                    autoComplete="off"
+                    required
+                  />
+                  <p className="mt-2 text-xs text-gray-400">
+                    บัญชีอาจารย์เปิดดูข้อสอบและเฉลยได้ทั้งหมด จึงต้องใช้รหัสเชิญจากผู้ดูแลระบบ
+                  </p>
                 </div>
               )}
 

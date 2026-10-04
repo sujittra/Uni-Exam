@@ -2,6 +2,9 @@
   "functions": {
     "api/judge.ts": {
       "maxDuration": 60
+    },
+    "api/db.ts": {
+      "maxDuration": 60
     }
   }
 }

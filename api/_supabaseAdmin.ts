@@ -44,6 +44,32 @@ async function toResult<T>(res: Response): Promise<RestResult<T>> {
   return { data: body as T, error: null };
 }
 
+// Uploads a file to a Supabase Storage bucket and returns its public URL. Exam images used
+// to be uploaded straight from the browser with the anon key, which let anyone with the
+// bundle write into the bucket; now only a teacher's api/db.ts call reaches it.
+export async function storageUpload(
+  bucket: string,
+  path: string,
+  body: Buffer,
+  contentType: string
+): Promise<RestResult<{ publicUrl: string }>> {
+  const res = await fetch(`${SUPABASE_URL}/storage/v1/object/${bucket}/${path}`, {
+    method: 'POST',
+    headers: {
+      apikey: SUPABASE_SERVICE_ROLE_KEY,
+      Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
+      'Content-Type': contentType,
+      'x-upsert': 'false',
+    },
+    body: body as any,
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    return { data: null, error: { message: text || `Storage upload error ${res.status}` } };
+  }
+  return { data: { publicUrl: `${SUPABASE_URL}/storage/v1/object/public/${bucket}/${path}` }, error: null };
+}
+
 // GET with PostgREST filters, e.g. pgSelect('questions', 'id=eq.abc&select=test_cases')
 export async function pgSelect<T = any[]>(table: string, query: string): Promise<RestResult<T>> {
   const res = await request(`${table}?${query}`);
@@ -54,6 +80,17 @@ export async function pgInsert<T = any[]>(table: string, rows: any[]): Promise<R
   const res = await request(table, {
     method: 'POST',
     headers: { Prefer: 'return=representation' },
+    body: JSON.stringify(rows),
+  });
+  return toResult<T>(res);
+}
+
+// INSERT ... ON CONFLICT DO UPDATE. `onConflict` names the unique column(s) PostgREST
+// should match on, e.g. 'student_id,exam_id'.
+export async function pgUpsert<T = any[]>(table: string, rows: any[], onConflict: string): Promise<RestResult<T>> {
+  const res = await request(`${table}?on_conflict=${encodeURIComponent(onConflict)}`, {
+    method: 'POST',
+    headers: { Prefer: 'resolution=merge-duplicates,return=representation' },
     body: JSON.stringify(rows),
   });
   return toResult<T>(res);
