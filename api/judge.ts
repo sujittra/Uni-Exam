@@ -210,6 +210,12 @@ async function reportStatus(res: any) {
     missing,
     python3: available.find((c) => c.id === COMPILER_IDS.python3) || null,
     java: available.find((c) => c.id === COMPILER_IDS.java) || null,
+    // Which Python the judge offers matters more than it looks: the "ทดสอบ" button runs
+    // Pyodide, which is Python 3.12, so a judge stuck on an older 3.x fails code that
+    // passed in the browser moments earlier — an f-string is a syntax error before 3.6.
+    // Listing the candidates here is how that gets noticed and corrected.
+    python: available.filter((c) => /python/i.test(String(c.name))),
+    compilers: available,
   });
 }
 
