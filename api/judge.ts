@@ -219,6 +219,33 @@ async function reportStatus(res: any) {
   });
 }
 
+// GET /api/judge?version=<compilerId> — what interpreter is behind that compiler id?
+//
+// The account offers several Python 3 entries ("Python 3.x", "Python 3 ML/AI",
+// "Python 3 nbc") and their names say nothing about the version, while the difference
+// decides whether a student's f-string compiles. One submission is cheap next to finding
+// out during an exam.
+async function probeVersion(res: any, compilerId: number) {
+  try {
+    const id = await createSubmission('import sys\nprint(sys.version)', compilerId, '');
+    const result = await pollSubmission(id);
+    const [output, error, cmpinfo] = await Promise.all([
+      fetchStream(id, 'output'),
+      fetchStream(id, 'error'),
+      fetchStream(id, 'cmpinfo'),
+    ]);
+    res.status(200).json({
+      compilerId,
+      status: result.result?.status?.name || result.result?.status?.code,
+      version: output.trim(),
+      error: error.trim() || undefined,
+      cmpinfo: cmpinfo.trim() || undefined,
+    });
+  } catch (e: any) {
+    res.status(200).json({ compilerId, error: e?.message || String(e) });
+  }
+}
+
 export default async function handler(req: any, res: any) {
   try {
     if (req.method !== 'POST' && req.method !== 'GET') {
@@ -237,6 +264,15 @@ export default async function handler(req: any, res: any) {
     if (req.method === 'GET') {
       if (session.role !== 'TEACHER') {
         res.status(403).json({ ok: false, error: 'Teachers only.' });
+        return;
+      }
+      const probe = Number(req.query?.version);
+      if (Number.isFinite(probe) && probe > 0) {
+        if (!SPHERE_SUBDOMAIN || !SPHERE_TOKEN) {
+          res.status(200).json({ error: 'ยังไม่ได้ตั้ง SPHERE_ENGINE_SUBDOMAIN หรือ SPHERE_ENGINE_TOKEN ใน Vercel' });
+          return;
+        }
+        await probeVersion(res, probe);
         return;
       }
       await reportStatus(res);
