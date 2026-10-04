@@ -8,16 +8,26 @@
 // question_hidden_test_cases) so hidden test data never has to pass through the student's
 // browser at all.
 //
-// Test cases are graded IN PARALLEL (not one-by-one) — each one is its own create+poll+
-// fetch round trip to Sphere Engine, and running them sequentially risked exceeding the
-// Vercel function's execution time limit with more than a couple of test cases.
+// A Python question costs ONE submission however many test cases it has: the cases are
+// compiled into a single program that runs them all and prints each answer between markers
+// (api/_pyHarness.ts). Sphere Engine bills per submission from a fixed pool, and at one
+// submission per test case a class of 118 sitting three code questions needed 1,416 of
+// them against 471 remaining. Java still goes one submission per case, in parallel, since
+// the batching harness is Python.
 //
 // This function is also where a code question's mark is decided. Its verdict is written to
 // public.judge_results, keyed by student, question and a fingerprint of the exact code that
 // was judged, and api/db.ts scores a code answer from that row — never from the `passed`
 // flag the browser sends back with the answer, which a student could simply set to true.
 import { pgSelect, pgUpsert, isSupabaseAdminConfigured } from './_supabaseAdmin.js';
-import { buildFunctionCallSource, describeEmptyCall } from './_pyHarness.js';
+import {
+  buildFunctionCallSource,
+  describeEmptyCall,
+  buildFunctionBatchSource,
+  buildStdinBatchSource,
+  parseBatchOutput,
+  BATCH_SYNTAX_ERROR,
+} from './_pyHarness.js';
 import { sessionFromRequest } from './_session.js';
 import { codeFingerprint } from './_scoring.js';
 import { findUnsupportedSyntax, describeSyntaxWarnings } from './_pySyntax.js';
@@ -158,6 +168,104 @@ async function gradeTestCase(
   } catch (e: any) {
     return { passed: false, line: `[System Error] Test Case ${index + 1}: ${e?.message || e}` };
   }
+}
+
+// How one test case's result is written for the student. Hidden cases say only whether
+// they passed — the whole reason they are hidden.
+const formatCaseLine = (
+  tc: TestCaseInput,
+  index: number,
+  functionMode: boolean,
+  expected: string,
+  actual: string,
+  passed: boolean
+) =>
+  tc.hidden
+    ? `Test Case ${index + 1}: [Hidden] (${passed ? 'PASS' : 'FAIL'})`
+    : `Test Case ${index + 1}: ${functionMode ? 'Call' : 'Input'} [${tc.input}] \n   -> Expected [${expected}] \n   -> Actual   [${actual}] (${passed ? 'PASS' : 'FAIL'})`;
+
+// Grades every test case of a Python question with a single Sphere Engine submission.
+//
+// One submission per test case was costing four per press of "ส่งคำตอบ"; the account has a
+// fixed pool, and a class of 118 sitting three code questions needed more of it than
+// existed. The program built here runs all the cases itself and prints each answer between
+// markers, so the pool buys four times as many attempts.
+async function gradePythonInOneSubmission(
+  code: string,
+  compilerId: number,
+  testCases: TestCaseInput[],
+  functionMode: boolean
+): Promise<GradeResult[]> {
+  // A missing call expression is a fault in the question, not the answer, and is caught
+  // before spending anything.
+  const emptyCall = functionMode ? testCases.findIndex((tc) => !String(tc.input || '').trim()) : -1;
+  if (emptyCall !== -1) {
+    return testCases.map((_, i) => ({ passed: false, line: describeEmptyCall(i) }));
+  }
+
+  const inputs = testCases.map((tc) => String(tc.input ?? ''));
+  const source = functionMode ? buildFunctionBatchSource(code, inputs) : buildStdinBatchSource(code, inputs);
+
+  // Everything below reports per test case, so one failure reads the same as it always did.
+  const everyCase = (line: (i: number) => string, fatal = false): GradeResult[] =>
+    testCases.map((tc, i) => ({
+      passed: false,
+      fatal: fatal && i === 0,
+      line: tc.hidden && !fatal ? `Test Case ${i + 1}: [Hidden] (FAIL)` : line(i),
+    }));
+
+  let submissionId: number;
+  let result: any;
+  try {
+    submissionId = await createSubmission(source, compilerId, '');
+    result = await pollSubmission(submissionId);
+  } catch (e: any) {
+    return everyCase((i) => `[System Error] Test Case ${i + 1}: ${e?.message || e}`);
+  }
+
+  const statusCode = result.result?.status?.code;
+  if (statusCode === 11) {
+    const cmpinfo = await fetchStream(submissionId, 'cmpinfo');
+    return [{ passed: false, fatal: true, line: `[Compilation Error]\n${cmpinfo}` }];
+  }
+  if (statusCode === 13) {
+    // The cases share a process, so a loop that never ends takes the rest with it.
+    return everyCase((i) => `[Time Limit Exceeded] (Test Case ${i + 1})`);
+  }
+  if (statusCode !== 15 && statusCode !== 12 && statusCode !== 19) {
+    return everyCase((i) => `[Judge Error] Test Case ${i + 1}: status code ${statusCode} (${result.result?.status?.name || 'unknown'})`);
+  }
+
+  const stdout = await fetchStream(submissionId, 'output');
+
+  // In 'stdin' mode the student's code is compiled inside the program, so a syntax error
+  // arrives here rather than as a compilation status.
+  if (stdout.startsWith(BATCH_SYNTAX_ERROR)) {
+    return [{ passed: false, fatal: true, line: `[Compilation Error]\n${stdout.slice(BATCH_SYNTAX_ERROR.length).trim()}` }];
+  }
+
+  // A crash before any case ran (status 12/19 with nothing parseable) is the student's
+  // module-level code failing, which is the same for every case.
+  const parsed = parseBatchOutput(stdout, testCases.length);
+  if (statusCode !== 15 && parsed.every((p) => p.error)) {
+    const stderr = await fetchStream(submissionId, 'error');
+    return everyCase((i) => `[Runtime Error] (Test Case ${i + 1})\n${stderr}`);
+  }
+
+  return testCases.map((tc, i) => {
+    const expected = normalize(tc.output);
+    if (parsed[i].error) {
+      return {
+        passed: false,
+        line: tc.hidden
+          ? `Test Case ${i + 1}: [Hidden] (FAIL - runtime error)`
+          : `[Runtime Error] (Test Case ${i + 1})\n${parsed[i].error}`,
+      };
+    }
+    const actual = normalize(parsed[i].answer);
+    const passed = actual === expected;
+    return { passed, line: formatCaseLine(tc, i, functionMode, expected, actual, passed) };
+  });
 }
 
 // GET /api/judge — is the judge actually usable right now?
@@ -343,7 +451,12 @@ export default async function handler(req: any, res: any) {
     // harness knows how to build — any other language falls back to stdin.
     const functionMode = question.input_mode === 'function' && language === 'python3';
 
-    const results = await Promise.all(testCases.map((tc, i) => gradeTestCase(code, compilerId, tc, i, functionMode)));
+    // Python goes through one submission for the whole question; anything else still costs
+    // one per test case, because the batching harness is Python.
+    const results =
+      language === 'python3'
+        ? await gradePythonInOneSubmission(code, compilerId, testCases, functionMode)
+        : await Promise.all(testCases.map((tc, i) => gradeTestCase(code, compilerId, tc, i, functionMode)));
 
     const fatal = results.find((r) => r.fatal);
     const allPassed = !fatal && results.every((r) => r.passed);

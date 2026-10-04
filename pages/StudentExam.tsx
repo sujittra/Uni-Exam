@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { User, Exam, Question, QuestionType, StudentProgress } from '../types';
 import { getExamsForStudent, submitStudentProgress, compileCode, getStudentProgress } from '../services/dataService';
 import { testPythonCode } from '../services/pyodideRunner';
+import { codeFingerprint } from '../api/_scoring';
 import { examForStudent, buildOptionOrders } from '../services/shuffle';
 import { Button } from '../components/Button';
 import { Card } from '../components/Card';
@@ -140,6 +141,9 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
   const [codeOutput, setCodeOutput] = useState<string>('');
   const [isCompiling, setIsCompiling] = useState(false);
   const [isTesting, setIsTesting] = useState(false);
+  // questionId -> fingerprint of the code that last passed "ทดสอบ". Holding the
+  // fingerprint rather than a boolean is what makes an edit re-lock the submit button.
+  const [testedOk, setTestedOk] = useState<Record<string, string>>({});
 
   useEffect(() => {
     loadExamsAndStatus();
@@ -454,6 +458,40 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
     const result = await testPythonCode(code, visibleTestCases, q.inputMode || 'stdin');
     setCodeOutput(result.output);
     setIsTesting(false);
+
+    // Passing here is what unlocks "ส่งคำตอบ". The fingerprint records which code passed,
+    // so editing afterwards locks it again — otherwise one passing run would license any
+    // number of submissions of anything.
+    setTestedOk((prev) => {
+      const next = { ...prev };
+      if (result.passed) next[q.id] = codeFingerprint(code);
+      else delete next[q.id];
+      return next;
+    });
+  };
+
+  // Whether "ส่งคำตอบ" is available for the question on screen.
+  //
+  // The judge costs a Sphere Engine submission per press from a pool that has to last the
+  // whole class, and an answer that can't even pass the test cases the student can see is
+  // not going to pass the hidden ones. Gating the graded run behind a passing "ทดสอบ"
+  // spends the pool on answers that have a chance.
+  const submitGate = (): { allowed: boolean; reason: string } => {
+    if (!activeExam) return { allowed: false, reason: '' };
+    const q = activeExam.questions[currentQuestionIdx];
+    // Only Python runs in the browser, so only Python can be asked to prove itself first.
+    if (q.language !== 'python3') return { allowed: true, reason: '' };
+    const visible = (q.testCases || []).filter((tc) => !tc.hidden);
+    if (visible.length === 0) return { allowed: true, reason: '' };
+
+    const val = answers[q.id];
+    const code = (typeof val === 'object' ? val.code : val) || '';
+    if (!code.trim()) return { allowed: false, reason: 'เขียนโค้ดก่อน แล้วกด "ทดสอบ"' };
+    if (!testedOk[q.id]) return { allowed: false, reason: 'กด "ทดสอบ" ให้ผ่านทุก test case ก่อน จึงจะส่งคำตอบได้' };
+    if (testedOk[q.id] !== codeFingerprint(code)) {
+      return { allowed: false, reason: 'โค้ดถูกแก้หลังจากทดสอบผ่าน — กด "ทดสอบ" อีกครั้งก่อนส่ง' };
+    }
+    return { allowed: true, reason: '' };
   };
 
   // "ส่งคำตอบ" — the graded run: goes through the remote judge against ALL test
@@ -515,6 +553,7 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
     const q = activeExam.questions[currentQuestionIdx];
     const isFirst = currentQuestionIdx === 0;
     const isLast = currentQuestionIdx === activeExam.questions.length - 1;
+    const gate = submitGate();
 
     return (
       <div className="min-h-screen bg-gray-50 flex flex-col">
@@ -646,8 +685,14 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
                               onChange={(e) => handleAnswerChange(e.target.value)}
                            />
                            <div className="flex justify-between items-center">
-                              <span className="text-xs text-gray-400">
-                                 {q.language === 'python3' ? 'Test = instant, unlimited (sample cases only)' : 'Output console below'}
+                              {/* Why the submit button is locked, when it is — otherwise a
+                                  disabled button looks like something is broken. */}
+                              <span className={`text-xs ${gate.allowed ? 'text-gray-400' : 'text-amber-600 font-medium'}`}>
+                                 {!gate.allowed
+                                    ? gate.reason
+                                    : q.language === 'python3'
+                                       ? 'Test = instant, unlimited (sample cases only)'
+                                       : 'Output console below'}
                               </span>
                               <div className="flex gap-2">
                                  {q.language === 'python3' && (
@@ -655,8 +700,13 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
                                        {isTesting ? 'Testing...' : '▶ ทดสอบ'}
                                     </Button>
                                  )}
-                                 <Button size="sm" onClick={handleRunCode} disabled={isCompiling || isTesting}>
-                                    {isCompiling ? 'Submitting...' : '✓ ส่งคำตอบ'}
+                                 <Button
+                                    size="sm"
+                                    onClick={handleRunCode}
+                                    disabled={isCompiling || isTesting || !gate.allowed}
+                                    title={gate.reason}
+                                 >
+                                    {isCompiling ? 'Submitting...' : gate.allowed ? '✓ ส่งคำตอบ' : '🔒 ส่งคำตอบ'}
                                  </Button>
                               </div>
                            </div>
@@ -706,6 +756,8 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
                         <p className="font-bold text-green-700">✓ ส่งคำตอบ</p>
                         <p className="text-gray-600">ใช้เมื่อพร้อมให้ตรวจจริง (รวม test case ที่ซ่อนอยู่ด้วย) — ผลจากปุ่มนี้คือคะแนนที่คุณจะได้รับ</p>
                         <p className="text-xs text-gray-400 mt-1">Use this when you're ready to be graded for real (including hidden test cases) — this determines your score.</p>
+                        <p className="text-gray-600 mt-2">ปุ่มนี้จะกดได้ก็ต่อเมื่อ <strong>"ทดสอบ" ผ่านครบทุก test case แล้ว</strong> และถ้าแก้โค้ดหลังจากนั้นต้องกด "ทดสอบ" ใหม่อีกครั้ง</p>
+                        <p className="text-xs text-gray-400 mt-1">It unlocks only once "ทดสอบ" has passed every visible test case, and locks again if you edit the code afterwards.</p>
                      </div>
                   </div>
                   <div className="flex justify-end">
