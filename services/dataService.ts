@@ -1,17 +1,60 @@
-import { createClient } from '@supabase/supabase-js';
 import { CodeLanguage, Exam, Question, QuestionType, StudentProgress, TestCase, User, UserRole } from '../types';
+import { loadToken, saveToken, clearToken } from './session';
+import {
+  calculateScore as scoreAnswers,
+  normalizeAnswerText as normalizeAnswer,
+  ScorableQuestion,
+} from '../api/_scoring';
+import { isAssignedToStudent as isAssigned } from '../api/_assignment';
 
 // ==========================================
-// SUPABASE CONFIGURATION
+// DATA ACCESS
 // ==========================================
-// Restore the keys found in the initial version
-const SUPABASE_URL = (import.meta as any).env?.VITE_SUPABASE_URL || 'https://wbkpuqtzkpvhjnckinep.supabase.co'; 
-const SUPABASE_KEY = (import.meta as any).env?.VITE_SUPABASE_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6India3B1cXR6a3B2aGpuY2tpbmVwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzA1NDE2OTMsImV4cCI6MjA4NjExNzY5M30.2Vsb4vl5WTnLLn60033Rcx-X6TfdDXrI1Qsuj8i_dN0';
+// This file used to hold a Supabase URL and anon key and talk to PostgREST directly. That
+// key ships inside the JS bundle, so everything the browser could do, anyone who opened the
+// site could do: read every MCQ answer key, read the teachers' passwords (stored in plain
+// text), rewrite or delete questions, and set their own score. Row Level Security is now
+// closed on every table and the service_role key lives only in the Vercel functions under
+// api/, so the browser has no database credentials at all — it calls api/db.ts, which
+// checks a signed session token and re-derives anything that matters (which student is
+// saving, which teacher owns an exam, what a set of answers is worth) on the server.
+//
+// What changed for this file: `supabase.from(...)` became `call(action, payload)`. The
+// snake_case rows the server returns are the same shape PostgREST was returning before, so
+// the mappers below are unchanged.
 
-// Initialize Client only if keys are present
-const supabase = (SUPABASE_URL && SUPABASE_KEY)
-  ? createClient(SUPABASE_URL, SUPABASE_KEY)
-  : null;
+// Offline demo mode, kept for running the UI with no backend at all. It is opt-in now —
+// there is no key left whose absence could imply it.
+const USE_MOCK = (import.meta as any).env?.VITE_USE_MOCK === 'true';
+
+class ApiError extends Error {}
+
+const call = async <T = any>(action: string, payload: Record<string, any> = {}): Promise<T> => {
+  const token = loadToken();
+  const res = await fetch('/api/db', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+    body: JSON.stringify({ action, ...payload }),
+  });
+
+  let body: any = null;
+  try {
+    body = await res.json();
+  } catch {
+    // fall through to the status-based message below
+  }
+
+  if (!res.ok) {
+    // An expired or rejected token means the session is over; dropping it here sends the
+    // user back to the login screen instead of letting every later call fail silently.
+    if (res.status === 401) clearToken();
+    throw new ApiError(body?.error || `Request failed (${res.status})`);
+  }
+  return body?.data as T;
+};
 
 // ==========================================
 // MOCK DATA STORAGE (Local Storage Wrapper)
@@ -45,8 +88,8 @@ const defaultUsers: User[] = [
 ];
 
 // Seed passwords. NOTE: In a real app, never store plain text passwords in LS.
-const defaultPasswords: Record<string, string> = { 
-    'Dr. Smith': 'admin123' 
+const defaultPasswords: Record<string, string> = {
+    'Dr. Smith': 'admin123'
 };
 
 const defaultExams: Exam[] = [
@@ -123,6 +166,9 @@ const mapExam = (e: any): Exam => ({
   questions: (e.questions || []).map(mapQuestion).sort((a: Question, b: Question) => a.text.localeCompare(b.text))
 });
 
+// correctOptionIndex and acceptedAnswers are absent from anything the server sends a
+// student — the answer key does not leave api/ any more — so they land as undefined here,
+// which is exactly what the exam page should see.
 const mapQuestion = (q: any): Question => ({
   id: q.id,
   type: q.type as QuestionType,
@@ -153,20 +199,11 @@ const safeParseJSON = (input: any) => {
 };
 
 // HELPER: Normalize Answer Text for Flexible Grading
-export const normalizeAnswerText = (text: any) => {
-  if (!text) return '';
-  // Handle Object case (if coming from Java Answer Object)
-  if (typeof text === 'object' && text.code) return String(text.code).toLowerCase().replace(/\s+/g, '');
-  
-  return String(text)
-    .toLowerCase()
-    .replace(/[\n\r]+/g, ',') // Convert newlines to commas (e.g. pop\npush -> pop,push)
-    .replace(/\s+/g, '');     // Remove all whitespace
-};
+export const normalizeAnswerText = normalizeAnswer;
 
 const mapProgress = (p: any, userName: string = ''): StudentProgress => ({
   studentId: p.student_id,
-  studentName: userName, 
+  studentName: userName,
   examId: p.exam_id,
   currentQuestionIndex: p.current_question_index,
   answers: safeParseJSON(p.answers), // Use Safe Parse
@@ -180,128 +217,81 @@ const mapProgress = (p: any, userName: string = ''): StudentProgress => ({
 });
 
 // ==========================================
-// GRADING LOGIC (Shared between Student Submission and Teacher Export)
+// GRADING LOGIC
 // ==========================================
-export const calculateScore = (exam: Exam, answers: Record<string, any>): number => {
-  let totalScore = 0;
-  
-  exam.questions.forEach(q => {
-    const ans = answers[q.id];
-    
-    if (ans !== undefined && ans !== null && ans !== '') {
-      if (q.type === QuestionType.MULTIPLE_CHOICE) {
-         // Improved Type Coercion: DB might give "0" (string), App gives 0 (number)
-         if (String(ans) === String(q.correctOptionIndex)) {
-           totalScore += q.score;
-         }
-      } else if (q.type === QuestionType.SHORT_ANSWER) {
-         // FLEXIBLE GRADING for Short Answer
-         const studentAns = normalizeAnswerText(ans);
-         const isCorrect = q.acceptedAnswers?.some(a => normalizeAnswerText(a) === studentAns);
-         if (isCorrect) totalScore += q.score;
-      } else if (q.type === QuestionType.JAVA_CODE) {
-         // A code question is worth its points only when the judge says every test case
-         // passed — the same thing "ส่งคำตอบ" reports to the student.
-         //
-         // There used to be a fallback here that awarded full marks for any answer longer
-         // than 20 characters, so that a student who wrote code but never submitted it
-         // wasn't left at zero. It also awarded full marks to code that failed to compile
-         // or produced the wrong output, which made the score meaningless. Length is not
-         // evidence of correctness; if an answer deserves credit without passing, that is
-         // a judgement for the teacher to make, not something to infer from a character
-         // count.
-         if (typeof ans === 'object' && ans.passed === true) {
-             totalScore += q.score;
-         }
-      }
-    }
-  });
-  
-  return totalScore;
-};
+// The rules themselves live in api/_scoring.ts, shared with the server so the dashboard and
+// the stored score can never disagree. This is the view-side entry point: it reads the
+// judge verdict saved next to the answer, which is what the teacher's browser has. The
+// score that is actually stored is computed in api/db.ts from the recorded verdicts
+// instead, where a student cannot reach it.
+const toScorable = (q: Question): ScorableQuestion => ({
+  id: q.id,
+  type: q.type,
+  score: q.score,
+  correctOptionIndex: q.correctOptionIndex,
+  acceptedAnswers: q.acceptedAnswers,
+});
+
+export const calculateScore = (exam: Exam, answers: Record<string, any>): number =>
+  scoreAnswers(exam.questions.map(toScorable), answers);
 
 // ==========================================
-// RECALCULATION SERVICE (NEW)
+// RECALCULATION SERVICE
 // ==========================================
 export const recalculateExamScores = async (examId: string): Promise<void> => {
-  console.log(`Starting recalculation for Exam: ${examId}`);
-  let exam: Exam | undefined;
-  let progressList: any[] = [];
-
-  // 1. Fetch Exam Definition & Existing Progress
-  if (supabase) {
-      const { data: eData } = await supabase.from('exams').select('*, questions(*)').eq('id', examId).single();
-      if(eData) exam = mapExam(eData);
-      const { data: pData } = await supabase.from('student_progress').select('*').eq('exam_id', examId);
-      progressList = pData || [];
-  } else {
-      const mockExams = getMockExams();
-      exam = mockExams.find(e => e.id === examId);
-      progressList = getMockProgress().filter(p => p.examId === examId);
-  }
-
-  if (!exam || progressList.length === 0) {
-    console.log("No exam or progress found to recalculate.");
+  if (!USE_MOCK) {
+    await call('teacher.recalculate', { examId });
     return;
   }
 
-  // 2. Iterate and Recalculate
-  const updates = progressList.map(p => {
-     const answers = safeParseJSON(p.answers);
-     const newScore = calculateScore(exam!, answers);
-     return {
-        student_id: p.student_id || p.studentId, // Handle both snake (DB) and camel (Mock)
-        exam_id: examId,
-        score: newScore,
-        // Preserve other fields for the upsert
-        current_question_index: p.current_question_index || p.currentQuestionIndex,
-        answers: answers,
-        status: p.status,
-        updated_at: new Date().toISOString()
-     };
-  });
+  const exam = getMockExams().find(e => e.id === examId);
+  const progressList = getMockProgress().filter(p => p.examId === examId);
+  if (!exam || progressList.length === 0) return;
 
-  // 3. Save Back to DB
-  if (supabase && updates.length > 0) {
-     // Batch Upsert
-     const { error } = await supabase.from('student_progress').upsert(updates, { onConflict: 'student_id, exam_id' });
-     if (error) console.error("Recalculation Save Error:", error);
-     else console.log(`Updated scores for ${updates.length} students.`);
-  } else if (!supabase) {
-     const mockProgress = getMockProgress();
-     updates.forEach(u => {
-        const idx = mockProgress.findIndex(mp => mp.studentId === u.student_id && mp.examId === u.exam_id);
-        if (idx >= 0) {
-            mockProgress[idx].score = u.score;
-            mockProgress[idx].lastUpdated = Date.now();
-        }
-     });
-     saveMockData(STORAGE_KEYS.PROGRESS, mockProgress);
-  }
+  const mockProgress = getMockProgress();
+  progressList.forEach(p => {
+    const idx = mockProgress.findIndex(mp => mp.studentId === p.studentId && mp.examId === examId);
+    if (idx >= 0) {
+      mockProgress[idx].score = calculateScore(exam, safeParseJSON(p.answers));
+      mockProgress[idx].lastUpdated = Date.now();
+    }
+  });
+  saveMockData(STORAGE_KEYS.PROGRESS, mockProgress);
 };
 
 // ==========================================
 // AUTH & USER MANAGEMENT
 // ==========================================
+// Credentials are checked in api/login.ts now. What comes back is the user record plus a
+// signed token; the token is what every later call presents, and it is the only thing that
+// decides whether a request is treated as a student, a teacher, or neither.
+const login = async (body: Record<string, any>): Promise<{ user: User; token: string }> => {
+  const res = await fetch('/api/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  const data = await res.json().catch(() => null);
+  if (!res.ok) throw new ApiError(data?.error || `Login failed (${res.status})`);
+  return data;
+};
 
 export const loginTeacher = async (name: string, password: string): Promise<User | null> => {
-  if (supabase) {
-    const { data, error } = await supabase
-      .from('users')
-      .select('*')
-      .eq('role', 'TEACHER')
-      .ilike('name', name) 
-      .eq('password', password)
-      .single();
-    if (error || !data) return null;
-    return mapUser(data);
+  if (!USE_MOCK) {
+    try {
+      const { user, token } = await login({ mode: 'teacher', name, password });
+      saveToken(token);
+      return user;
+    } catch {
+      return null;
+    }
   }
-  
+
   const mockUsers = getMockUsers();
   const mockPasswords = getMockPasswords();
-  
-  const user = mockUsers.find(u => 
-    u.role === UserRole.TEACHER && 
+
+  const user = mockUsers.find(u =>
+    u.role === UserRole.TEACHER &&
     u.name.toLowerCase().trim() === name.toLowerCase().trim()
   );
 
@@ -309,70 +299,62 @@ export const loginTeacher = async (name: string, password: string): Promise<User
       const storedPassword = mockPasswords[user.name];
       if (storedPassword === password) return user;
   }
-  
+
   return null;
 };
 
-export const registerTeacher = async (name: string, password: string): Promise<User> => {
-  if (supabase) {
-    const { data, error } = await supabase
-      .from('users')
-      .insert({ name, password, role: 'TEACHER' })
-      .select()
-      .single();
-    if (error) throw new Error(error.message);
-    return mapUser(data);
+// Creating a teacher account needs the invite code set as TEACHER_SIGNUP_CODE on the
+// server; without it the server refuses, because an open sign-up form is a door straight
+// into every exam and every answer key.
+export const registerTeacher = async (name: string, password: string, code?: string): Promise<User> => {
+  if (!USE_MOCK) {
+    const { user, token } = await login({ mode: 'register', name, password, code });
+    saveToken(token);
+    return user;
   }
-  
+
   const mockUsers = getMockUsers();
-  
-  const existing = mockUsers.find(u => 
-      u.role === UserRole.TEACHER && 
+
+  const existing = mockUsers.find(u =>
+      u.role === UserRole.TEACHER &&
       u.name.toLowerCase().trim() === name.toLowerCase().trim()
   );
 
   if (existing) throw new Error("Username already taken");
-  
+
   const newUser: User = { id: `t_${Date.now()}`, name: name.trim(), role: UserRole.TEACHER };
-  
+
   const updatedUsers = [...mockUsers, newUser];
   saveMockData(STORAGE_KEYS.USERS, updatedUsers);
-  
+
   const mockPasswords = getMockPasswords();
   mockPasswords[newUser.name] = password;
   saveMockData(STORAGE_KEYS.PASSWORDS, mockPasswords);
-  
+
   return newUser;
 };
 
 export const loginStudent = async (studentId: string): Promise<User | null> => {
   const cleanId = studentId.trim();
-  if (supabase) {
-    const { data, error } = await supabase.from('users').select('*').eq('student_id', cleanId).single();
-    if (error || !data) return null;
-    return mapUser(data);
+  if (!USE_MOCK) {
+    try {
+      const { user, token } = await login({ mode: 'student', studentId: cleanId });
+      saveToken(token);
+      return user;
+    } catch {
+      return null;
+    }
   }
   const mockUsers = getMockUsers();
   return mockUsers.find(u => u.studentId === cleanId && u.role === UserRole.STUDENT) || null;
 };
 
-// UPDATED: Get students created by a specific teacher
+// Students belonging to the signed-in teacher. The teacherId argument is kept for the
+// call sites; the server uses the token's identity rather than this value.
 export const getStudents = async (teacherId?: string): Promise<User[]> => {
-  if (supabase) {
-    let query = supabase
-      .from('users')
-      .select('*')
-      .eq('role', 'STUDENT')
-      .order('student_id', { ascending: true });
-
-    // Filter by teacher ownership if provided
-    if (teacherId) {
-       query = query.eq('created_by', teacherId);
-    }
-      
-    const { data, error } = await query;
-    if (error) return [];
-    return data.map(mapUser);
+  if (!USE_MOCK) {
+    const rows = await call<any[]>('teacher.students');
+    return (rows || []).map(mapUser);
   }
 
   // Mock
@@ -385,24 +367,12 @@ export const getStudents = async (teacherId?: string): Promise<User[]> => {
 
 export interface StudentImportRow { id: string; name: string; section: string; major?: string }
 
-// UPDATED: Import students with teacher ownership
 export const importStudents = async (teacherId: string, studentData: StudentImportRow[]) => {
-  if (supabase) {
-    const { error } = await supabase.from('users').upsert(
-      studentData.map(s => ({ 
-          student_id: s.id, 
-          name: s.name, 
-          section: s.section, 
-          major: s.major || null,
-          role: 'STUDENT',
-          created_by: teacherId // Link student to teacher
-      })),
-      { onConflict: 'student_id' }
-    );
-    if (error) throw new Error("Import failed: " + error.message);
+  if (!USE_MOCK) {
+    await call('teacher.importStudents', { rows: studentData });
     return;
   }
-  
+
   const mockUsers = getMockUsers();
   const newUsers = studentData.map(s => ({
     id: `s_${s.id}`,
@@ -413,13 +383,13 @@ export const importStudents = async (teacherId: string, studentData: StudentImpo
     role: UserRole.STUDENT,
     createdBy: teacherId
   }));
-  
+
   // Basic mock upsert logic (overwrite if exists)
   const existingMap = new Map(mockUsers.map(u => [u.studentId || u.id, u]));
   newUsers.forEach(nu => {
       existingMap.set(nu.studentId, nu);
   });
-  
+
   saveMockData(STORAGE_KEYS.USERS, Array.from(existingMap.values()));
 };
 
@@ -429,16 +399,10 @@ export const updateStudent = async (
   id: string,
   updates: { name?: string; section?: string; major?: string }
 ): Promise<void> => {
-  const payload = {
-    ...(updates.name !== undefined ? { name: updates.name } : {}),
-    ...(updates.section !== undefined ? { section: updates.section } : {}),
-    ...(updates.major !== undefined ? { major: updates.major || null } : {}),
-  };
-  if (Object.keys(payload).length === 0) return;
+  if (Object.keys(updates).length === 0) return;
 
-  if (supabase) {
-    const { error } = await supabase.from('users').update(payload).eq('id', id);
-    if (error) throw new Error("Update failed: " + error.message);
+  if (!USE_MOCK) {
+    await call('teacher.updateStudent', { id, updates });
     return;
   }
   const mockUsers = getMockUsers();
@@ -448,9 +412,8 @@ export const updateStudent = async (
 // Assigns one major to many students at once (the roster's bulk "assign สาขา" action).
 export const assignMajorToStudents = async (ids: string[], major: string): Promise<void> => {
   if (ids.length === 0) return;
-  if (supabase) {
-    const { error } = await supabase.from('users').update({ major: major || null }).in('id', ids);
-    if (error) throw new Error("Assign failed: " + error.message);
+  if (!USE_MOCK) {
+    await call('teacher.assignMajor', { ids, major });
     return;
   }
   const idSet = new Set(ids);
@@ -462,9 +425,8 @@ export const assignMajorToStudents = async (ids: string[], major: string): Promi
 // so their exam attempts and scores go with them.
 export const deleteStudents = async (ids: string[]): Promise<void> => {
   if (ids.length === 0) return;
-  if (supabase) {
-    const { error } = await supabase.from('users').delete().in('id', ids);
-    if (error) throw new Error("Delete failed: " + error.message);
+  if (!USE_MOCK) {
+    await call('teacher.deleteStudents', { ids });
     return;
   }
   const idSet = new Set(ids);
@@ -475,15 +437,21 @@ export const deleteStudents = async (ids: string[]): Promise<void> => {
 // EXAM MANAGEMENT
 // ==========================================
 
+// The file is sent to api/db.ts rather than straight to Supabase Storage: uploading with
+// the anon key meant anyone with the bundle could write into the bucket.
 export const uploadExamImage = async (file: File): Promise<string> => {
-  if (supabase) {
-    const fileExt = file.name.split('.').pop();
-    const fileName = `${Date.now()}_${Math.random().toString(36).substr(2, 9)}.${fileExt}`;
-    const filePath = `${fileName}`;
-    const { error: uploadError } = await supabase.storage.from('exam-images').upload(filePath, file);
-    if (uploadError) throw new Error(`Upload failed: ${uploadError.message}`);
-    const { data } = supabase.storage.from('exam-images').getPublicUrl(filePath);
-    return data.publicUrl;
+  if (!USE_MOCK) {
+    const dataBase64 = await new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onerror = () => reject(new Error('Could not read the file.'));
+      reader.onloadend = () => resolve(String(reader.result).split(',')[1] || '');
+      reader.readAsDataURL(file);
+    });
+    const { url } = await call<{ url: string }>('teacher.uploadImage', {
+      dataBase64,
+      contentType: file.type,
+    });
+    return url;
   }
   return new Promise((resolve) => {
       const reader = new FileReader();
@@ -492,75 +460,26 @@ export const uploadExamImage = async (file: File): Promise<string> => {
   });
 };
 
-// Case-insensitive section match (e.g. "sec01" / "SEC01" / "Sec01" are treated as the same section)
-const normSection = (s?: string) => (s || '').trim().toUpperCase();
-const isAssignedToSection = (assignedSections: string[], section?: string) =>
-  assignedSections.some(a => normSection(a) === normSection(section));
+export const isAssignedToStudent = (exam: Exam, student: User) =>
+  isAssigned({ assignedSections: exam.assignedSections, assignedMajors: exam.assignedMajors }, student);
 
-// Majors are ANDed with sections and are optional: an exam with no majors listed is open to
-// every major, so an empty list must never exclude anyone.
-const normMajor = (m?: string) => (m || '').trim().toLowerCase();
-export const isAssignedToStudent = (exam: Exam, student: User) => {
-  if (!isAssignedToSection(exam.assignedSections, student.section)) return false;
-  const majors = exam.assignedMajors || [];
-  if (majors.length === 0) return true;
-  return majors.some(m => normMajor(m) === normMajor(student.major));
-};
-
+// Which exams a student may sit is decided on the server from their own roster row; the
+// `student` argument is only used by the offline mock.
 export const getExamsForStudent = async (student: User): Promise<Exam[]> => {
-  if (supabase) {
-    const { data, error } = await supabase.from('exams').select('*, questions(*)').eq('is_active', true);
-    if (error) return [];
-    const allExams = data.map(mapExam);
-    return allExams.filter(e => isAssignedToStudent(e, student));
+  if (!USE_MOCK) {
+    const rows = await call<any[]>('student.exams');
+    return (rows || []).map(mapExam);
   }
   const mockExams = getMockExams();
   return mockExams.filter(e => e.isActive && isAssignedToStudent(e, student));
 };
 
-// UPDATED: Filter by teacherId
-// Hidden test cases live behind api/hidden-test-cases.ts (service_role only — RLS blocks
-// this client's anon key from reading them directly). The teacher editor needs the real
-// content to display/edit them, so merge them in here for the teacher-facing fetch only.
-const fetchHiddenTestCases = async (questionIds: string[]): Promise<Record<string, TestCase[]>> => {
-  if (questionIds.length === 0) return {};
-  try {
-    const res = await fetch(`/api/hidden-test-cases?questionIds=${questionIds.join(',')}`);
-    if (!res.ok) return {};
-    return await res.json();
-  } catch {
-    return {};
-  }
-};
-
-const mergeHiddenTestCases = async (exams: Exam[]): Promise<Exam[]> => {
-  const codeQuestionIds = exams.flatMap(e => e.questions)
-    .filter(q => q.type === QuestionType.JAVA_CODE)
-    .map(q => q.id);
-  const hiddenByQuestion = await fetchHiddenTestCases(codeQuestionIds);
-
-  return exams.map(e => ({
-    ...e,
-    questions: e.questions.map(q => {
-      const hidden = hiddenByQuestion[q.id];
-      if (!hidden || hidden.length === 0) return q;
-      return { ...q, testCases: [...(q.testCases || []), ...hidden.map(tc => ({ ...tc, hidden: true }))] };
-    })
-  }));
-};
-
 export const getExamsForTeacher = async (teacherId?: string): Promise<Exam[]> => {
-  if (supabase) {
-    let query = supabase.from('exams').select('*, questions(*)').order('created_at', { ascending: false });
-
-    // Filter by created_by if teacherId is provided
-    if (teacherId) {
-       query = query.eq('created_by', teacherId);
-    }
-
-    const { data, error } = await query;
-    if (error) return [];
-    return mergeHiddenTestCases(data.map(mapExam));
+  if (!USE_MOCK) {
+    // Hidden test cases are merged in by the server for the teacher's own exams — the
+    // editor needs their content, and nothing else in the app is ever allowed to see it.
+    const rows = await call<any[]>('teacher.exams');
+    return (rows || []).map(mapExam);
   }
 
   // Mock Data Filtering
@@ -571,88 +490,29 @@ export const getExamsForTeacher = async (teacherId?: string): Promise<Exam[]> =>
   return mockExams;
 };
 
-// UPDATED: Save created_by
 export const saveExam = async (exam: Exam): Promise<Exam> => {
-  let savedExamId = exam.id;
-
-  if (supabase) {
-    const examPayload = {
-      title: exam.title,
-      description: exam.description,
-      duration_minutes: exam.durationMinutes,
-      is_active: exam.isActive,
-      shuffle_questions: !!exam.shuffleQuestions,
-      shuffle_options: !!exam.shuffleOptions,
-      assigned_sections: exam.assignedSections,
-      assigned_majors: exam.assignedMajors || [],
-      created_by: exam.createdBy // Save ownership
-    };
-    
-    if (exam.id.startsWith('e') && exam.id.length < 20) {
-      const { data: newExam, error: createError } = await supabase.from('exams').insert(examPayload).select().single();
-      if (createError) throw createError;
-      savedExamId = newExam.id;
-    } else {
-      const { error: updateError } = await supabase.from('exams').update(examPayload).eq('id', savedExamId);
-      if (updateError) throw updateError;
-    }
-    await supabase.from('questions').delete().eq('exam_id', savedExamId);
-    if (exam.questions.length > 0) {
-      // Hidden test cases never go into questions.test_cases (that column is readable by
-      // anon/students) — only the visible ones do. Hidden ones are pushed separately below,
-      // after the questions are inserted and we have their new ids (questions are always
-      // fully deleted + reinserted here, so ids change on every save).
-      const questionsPayload = exam.questions.map(q => ({
-        exam_id: savedExamId,
-        type: q.type,
-        text: q.text,
-        image_url: q.imageUrl,
-        score: q.score,
-        options: q.options,
-        correct_option_index: q.correctOptionIndex,
-        test_cases: q.testCases?.filter(tc => !tc.hidden),
-        language: q.language,
-        allow_file_upload: q.type === QuestionType.JAVA_CODE ? (q.allowFileUpload !== false) : undefined,
-        input_mode: q.type === QuestionType.JAVA_CODE ? (q.inputMode || 'stdin') : undefined,
-        accepted_answers: q.acceptedAnswers
-      }));
-      const { data: insertedQuestions, error: qError } = await supabase.from('questions').insert(questionsPayload).select();
-      if (qError) throw qError;
-
-      // Push hidden test cases (if any) to their own RLS-protected table via the server
-      // function — insertedQuestions comes back in the same order as questionsPayload.
-      await Promise.all(exam.questions.map((q, idx) => {
-        const hiddenCases = q.testCases?.filter(tc => tc.hidden) || [];
-        if (hiddenCases.length === 0) return Promise.resolve();
-        const questionId = insertedQuestions?.[idx]?.id;
-        if (!questionId) return Promise.resolve();
-        return fetch('/api/hidden-test-cases', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ questionId, testCases: hiddenCases.map(tc => ({ input: tc.input, output: tc.output })) })
-        }).catch(() => {});
-      }));
-    }
-  } else {
-    // Mock Save
-    const mockExams = getMockExams();
-    const index = mockExams.findIndex(e => e.id === exam.id);
-    let updatedExams;
-    if (index >= 0) {
-      updatedExams = [...mockExams];
-      updatedExams[index] = exam;
-    } else {
-      updatedExams = [...mockExams, exam];
-    }
-    saveMockData(STORAGE_KEYS.EXAMS, updatedExams);
+  if (!USE_MOCK) {
+    const { examId } = await call<{ examId: string }>('teacher.saveExam', { exam });
+    return { ...exam, id: examId };
   }
 
-  return { ...exam, id: savedExamId };
+  // Mock Save
+  const mockExams = getMockExams();
+  const index = mockExams.findIndex(e => e.id === exam.id);
+  let updatedExams;
+  if (index >= 0) {
+    updatedExams = [...mockExams];
+    updatedExams[index] = exam;
+  } else {
+    updatedExams = [...mockExams, exam];
+  }
+  saveMockData(STORAGE_KEYS.EXAMS, updatedExams);
+  return exam;
 };
 
 export const deleteExam = async (examId: string): Promise<void> => {
-  if (supabase) {
-    await supabase.from('exams').delete().eq('id', examId);
+  if (!USE_MOCK) {
+    await call('teacher.deleteExam', { examId });
     return;
   }
   const mockExams = getMockExams();
@@ -661,8 +521,8 @@ export const deleteExam = async (examId: string): Promise<void> => {
 };
 
 export const updateExamStatus = async (examId: string, isActive: boolean): Promise<void> => {
-  if (supabase) {
-    await supabase.from('exams').update({ is_active: isActive }).eq('id', examId);
+  if (!USE_MOCK) {
+    await call('teacher.setExamStatus', { examId, isActive });
     return;
   }
   const mockExams = getMockExams();
@@ -678,79 +538,44 @@ export const updateExamStatus = async (examId: string, isActive: boolean): Promi
 // PROGRESS & RESULTS
 // ==========================================
 
+// A student can only ever read their own attempt: the server answers from the token's
+// student id and ignores the one passed here.
 export const getStudentProgress = async (studentId: string, examId: string): Promise<StudentProgress | null> => {
-  if (supabase) {
-    const { data: progress } = await supabase
-      .from('student_progress')
-      .select('*')
-      .eq('student_id', studentId)
-      .eq('exam_id', examId)
-      .single();
-
-    if (!progress) return null;
-
-    const { data: user } = await supabase
-      .from('users')
-      .select('name')
-      .eq('student_id', studentId)
-      .single();
-
-    return mapProgress(progress, user?.name || studentId);
+  if (!USE_MOCK) {
+    const row = await call<any>('student.progress', { examId });
+    return row ? mapProgress(row, row.student_name || studentId) : null;
   }
   const mockProgressStore = getMockProgress();
   return mockProgressStore.find(p => p.studentId === studentId && p.examId === examId) || null;
 }
 
+// The score field on `progress` is what the exam page showed locally; the server recomputes
+// it from the answers and the recorded judge verdicts, and that is what gets stored.
 export const submitStudentProgress = async (progress: StudentProgress): Promise<{success: boolean, error?: string}> => {
-  if (supabase) {
+  if (!USE_MOCK) {
     try {
-      const payload: any = {
-        student_id: progress.studentId,
-        exam_id: progress.examId,
-        current_question_index: progress.currentQuestionIndex,
-        answers: progress.answers || {}, // Force object
-        score: progress.score, // CRITICAL: Save the actual calculated score
+      const { score } = await call<{ score: number }>('student.saveProgress', {
+        examId: progress.examId,
+        currentQuestionIndex: progress.currentQuestionIndex,
+        answers: progress.answers || {},
         status: progress.status,
-        auto_submitted: !!progress.autoSubmitted,
-        tab_switch_count: progress.tabSwitchCount || 0,
-        capture_attempt_count: progress.captureAttemptCount || 0,
-        updated_at: new Date().toISOString()
-      };
-      if (progress.startedAt) {
-        payload.started_at = new Date(progress.startedAt).toISOString();
-      }
-
-      let { error } = await supabase.from('student_progress').upsert(payload, { onConflict: 'student_id, exam_id' });
-
-      // FALLBACK: If a newer column (e.g. 'started_at', 'auto_submitted') is missing from an
-      // older/un-migrated database schema (PGRST204), retry without it.
-      let fallbackPayload = payload;
-      while (error && error.code === 'PGRST204') {
-          const missingColumn = /column '(\w+)'/.exec(error.message)?.[1];
-          if (!missingColumn || !(missingColumn in fallbackPayload)) break;
-          console.warn(`Supabase schema mismatch (missing ${missingColumn}). Retrying payload without it.`);
-          const { [missingColumn]: _omit, ...rest } = fallbackPayload;
-          fallbackPayload = rest;
-          const retry = await supabase.from('student_progress').upsert(fallbackPayload, { onConflict: 'student_id, exam_id' });
-          error = retry.error;
-      }
-
-      if (error) {
-        // Detailed Error Logging
-        console.error("SUPABASE UPLOAD ERROR:", error);
-        return { success: false, error: `${error.code}: ${error.message} (${error.details || ''})` };
-      }
+        startedAt: progress.startedAt,
+        autoSubmitted: !!progress.autoSubmitted,
+        tabSwitchCount: progress.tabSwitchCount || 0,
+        captureAttemptCount: progress.captureAttemptCount || 0,
+      });
+      progress.score = score;
       return { success: true };
     } catch (e: any) {
-      console.error("UNEXPECTED ERROR:", e);
-      return { success: false, error: e.message };
+      console.error('SAVE PROGRESS ERROR:', e);
+      return { success: false, error: e?.message || String(e) };
     }
   }
 
   const mockProgressStore = getMockProgress();
   const existingIndex = mockProgressStore.findIndex(p => p.studentId === progress.studentId && p.examId === progress.examId);
   let updatedStore;
-  
+
   if (existingIndex >= 0) {
     updatedStore = [...mockProgressStore];
     updatedStore[existingIndex] = { ...progress, lastUpdated: Date.now() };
@@ -765,12 +590,8 @@ export const submitStudentProgress = async (progress: StudentProgress): Promise<
 // Keeps their existing answers/score/startedAt — the exam UI computes remaining time
 // from startedAt, so this only has an effect while time is still left in the window.
 export const reopenStudentProgress = async (studentId: string, examId: string): Promise<void> => {
-  if (supabase) {
-    await supabase
-      .from('student_progress')
-      .update({ status: 'IN_PROGRESS', updated_at: new Date().toISOString() })
-      .eq('student_id', studentId)
-      .eq('exam_id', examId);
+  if (!USE_MOCK) {
+    await call('teacher.reopenProgress', { studentId, examId });
     return;
   }
   const mockProgressStore = getMockProgress();
@@ -782,27 +603,9 @@ export const reopenStudentProgress = async (studentId: string, examId: string): 
 };
 
 export const getLiveProgress = async (examId: string): Promise<StudentProgress[]> => {
-  if (supabase) {
-    // 1. Get Progress
-    const { data: progressData, error } = await supabase
-      .from('student_progress')
-      .select('*')
-      .eq('exam_id', examId);
-    
-    if (error || !progressData) return [];
-
-    // 2. Get Student Names Manually
-    const studentIds = progressData.map((p: any) => p.student_id);
-    if (studentIds.length === 0) return [];
-
-    const { data: users } = await supabase
-      .from('users')
-      .select('student_id, name')
-      .in('student_id', studentIds);
-
-    const userMap = new Map(users?.map((u: any) => [u.student_id, u.name]) || []);
-
-    return progressData.map((p: any) => mapProgress(p, userMap.get(p.student_id) || 'Unknown'));
+  if (!USE_MOCK) {
+    const rows = await call<any[]>('teacher.liveProgress', { examId });
+    return (rows || []).map((p: any) => mapProgress(p, p.student_name || 'Unknown'));
   }
 
   // Fallback to Mock
@@ -821,56 +624,34 @@ export interface ExamResult {
 }
 
 export const getExamResults = async (examId: string): Promise<ExamResult[]> => {
-  let exam: Exam | undefined;
-  let progressList: any[] = [];
-  let users: any[] = [];
-
-  // --- 1. FETCH DATA ---
-  if (supabase) {
-     const { data: eData } = await supabase.from('exams').select('*, questions(*)').eq('id', examId).single();
-     if(eData) exam = mapExam(eData);
-
-     const { data: pData } = await supabase.from('student_progress').select('*').eq('exam_id', examId);
-     progressList = pData || [];
-
-     if (progressList.length > 0) {
-        const sIds = progressList.map((p: any) => p.student_id);
-        const { data: uData } = await supabase.from('users').select('student_id, name, section').in('student_id', sIds);
-        users = uData || [];
-     }
-  } else {
-     const mockExams = getMockExams();
-     exam = mockExams.find(e => e.id === examId);
-     progressList = getMockProgress().filter(p => p.examId === examId);
-     users = getMockUsers();
+  if (!USE_MOCK) {
+    const rows = await call<any[]>('teacher.examResults', { examId });
+    return (rows || []).map((r: any) => ({
+      studentId: r.student_id,
+      name: r.name,
+      section: r.section,
+      totalScore: r.total_score,
+      maxScore: r.max_score,
+      status: r.status,
+      submittedAt: r.updated_at ? new Date(r.updated_at).toLocaleString() : 'N/A',
+    }));
   }
 
+  const exam = getMockExams().find(e => e.id === examId);
   if (!exam) return [];
+  const users = getMockUsers();
+  const maxScore = exam.questions.reduce((sum, q) => sum + q.score, 0);
 
-  // --- 2. CALCULATE SCORES ---
-  return progressList.map((p: any) => {
-    // Ensure answers is an object (Fix for Stringified JSONB)
-    const answers = safeParseJSON(p.answers); 
-    const status = p.status;
-    const submittedAt = p.updated_at || p.lastUpdated; 
-    
-    const studentId = p.student_id || p.studentId; 
-    const user = users.find((u: any) => (u.student_id || u.studentId) === studentId);
-
-    // Calculate Scores using shared logic
-    const totalScore = calculateScore(exam!, answers);
-    
-    // Calculate Max Score
-    const maxScore = exam!.questions.reduce((sum, q) => sum + q.score, 0);
-
+  return getMockProgress().filter(p => p.examId === examId).map(p => {
+    const user = users.find(u => u.studentId === p.studentId);
     return {
-      studentId: studentId,
+      studentId: p.studentId,
       name: user?.name || 'Unknown',
       section: user?.section || 'N/A',
-      totalScore,
+      totalScore: calculateScore(exam, safeParseJSON(p.answers)),
       maxScore,
-      status: status,
-      submittedAt: submittedAt ? new Date(submittedAt).toLocaleString() : 'N/A'
+      status: p.status,
+      submittedAt: p.lastUpdated ? new Date(p.lastUpdated).toLocaleString() : 'N/A',
     };
   });
 };
@@ -878,19 +659,24 @@ export const getExamResults = async (examId: string): Promise<ExamResult[]> => {
 // ==========================================
 // REMOTE GRADING (via Vercel serverless function -> Sphere Engine)
 // ==========================================
-// The actual judge call (and its API token) lives server-side in api/judge.ts, which
-// also looks up this question's test cases itself (visible AND hidden) — the client
-// only ever sends the question id + code, never test case content, so hidden test data
-// never has to touch the student's browser at all.
+// The judge call (and its API token) lives server-side in api/judge.ts, which looks up this
+// question's test cases itself (visible AND hidden) — the client only ever sends the
+// question id + code, never test case content. The session token goes with it because the
+// judge records its verdict against the student, and that recorded verdict is what the
+// mark for a code question is made of.
 export const compileCode = async (questionId: string, code: string, language: CodeLanguage = 'java'): Promise<{passed: boolean, output: string}> => {
   if (!code.trim()) {
       return { passed: false, output: "Error: Code is empty." };
   }
 
   try {
+    const token = loadToken();
     const response = await fetch('/api/judge', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
       body: JSON.stringify({ questionId, code, language })
     });
 

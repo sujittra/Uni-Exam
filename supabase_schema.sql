@@ -12,7 +12,11 @@ create table public.users (
   student_id text unique, -- Used for login (e.g., '64001'), null for teachers
   section text, -- Group/Class section (e.g., 'SEC01'), null for teachers
   major text, -- Student's major/programme (e.g., 'วิศวกรรมซอฟต์แวร์'), null for teachers
-  password text -- Added for Teacher login (Simple text storage for this prototype)
+  -- Teacher login only. Stored as scrypt$<salt>$<hash> — see api/_session.ts, which both
+  -- writes and checks it. Plain text values from before the lockdown are still accepted at
+  -- login and replaced with a hash of the same password on the way through, so no teacher
+  -- has to change theirs; nothing writes a new plain text password any more.
+  password text
 );
 
 -- EXAMS: Stores examination details
@@ -92,10 +96,48 @@ create table public.student_progress (
   unique(student_id, exam_id)
 );
 
--- 3. Enable Realtime (Crucial for Teacher Dashboard)
+-- JUDGE RESULTS: what a code question's mark is made of.
+-- api/judge.ts writes one row per student per question after grading; api/db.ts reads it
+-- when it scores an attempt. The `passed` flag the browser keeps next to the answer is for
+-- the console display only — it arrives from the student's own machine, so believing it
+-- would let anyone award themselves full marks. code_fingerprint ties the verdict to the
+-- exact code that earned it, so editing the answer afterwards drops the mark with it.
+create table public.judge_results (
+  student_id text not null,
+  question_id uuid references public.questions(id) on delete cascade not null,
+  code_fingerprint text not null,
+  passed boolean not null default false,
+  updated_at timestamp with time zone default timezone('utc'::text, now()) not null,
+  primary key (student_id, question_id)
+);
+
+-- 3. Row Level Security — closed on every table
+--
+-- The browser holds no database credentials at all: it calls the functions under api/,
+-- which use the service_role key (service_role bypasses RLS) and check a signed session
+-- token first. RLS enabled with no policy denies every row to anon and authenticated, which
+-- is what makes the anon key in any older bundle worthless.
+--
+-- Before this, every table was readable and writable with that key: the MCQ answer keys,
+-- the teachers' passwords, and every student's score. See migrations/001_lockdown.sql for
+-- the change applied to the existing database.
+alter table public.users enable row level security;
+alter table public.exams enable row level security;
+alter table public.questions enable row level security;
+alter table public.student_progress enable row level security;
+alter table public.judge_results enable row level security;
+
+revoke all on public.users from anon, authenticated;
+revoke all on public.exams from anon, authenticated;
+revoke all on public.questions from anon, authenticated;
+revoke all on public.student_progress from anon, authenticated;
+revoke all on public.question_hidden_test_cases from anon, authenticated;
+revoke all on public.judge_results from anon, authenticated;
+
+-- 4. Enable Realtime (Crucial for Teacher Dashboard)
 alter publication supabase_realtime add table public.student_progress;
 
--- 4. Initial Seed Data
+-- 5. Initial Seed Data
 
 -- Teacher (Default password matches the code: admin123)
 insert into public.users (name, role, password) values

@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { User, Exam, Question, QuestionType, StudentProgress } from '../types';
-import { getExamsForStudent, submitStudentProgress, compileCode, getStudentProgress, calculateScore } from '../services/dataService';
+import { getExamsForStudent, submitStudentProgress, compileCode, getStudentProgress } from '../services/dataService';
 import { testPythonCode } from '../services/pyodideRunner';
 import { examForStudent, buildOptionOrders } from '../services/shuffle';
 import { Button } from '../components/Button';
@@ -344,12 +344,13 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
     setShowTOS(null);
   };
 
-  const syncProgress = async (examId: string, qIdx: number, ans: Record<string, any>, status: 'IDLE' | 'IN_PROGRESS' | 'COMPLETED', startedAt: number, bg: boolean = false, autoSubmitted: boolean = false) => {
+  // Returns the score the server recorded, or null if the save didn't reach it.
+  //
+  // The exam page can't work the score out any more: the answer key never leaves the
+  // server now, so what comes back from submitStudentProgress is both the authoritative
+  // number and the only one this page has.
+  const syncProgress = async (examId: string, qIdx: number, ans: Record<string, any>, status: 'IDLE' | 'IN_PROGRESS' | 'COMPLETED', startedAt: number, bg: boolean = false, autoSubmitted: boolean = false): Promise<number | null> => {
     if (!bg) setSyncingStatus('Saving...');
-
-    // Calculate current score (even if partial)
-    const exam = availableExams.find(e => e.id === examId);
-    const currentScore = exam ? calculateScore(exam, ans) : 0;
 
     const progress: StudentProgress = {
       studentId: user.studentId!,
@@ -357,7 +358,7 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
       examId,
       currentQuestionIndex: qIdx,
       answers: ans,
-      score: currentScore, // Save Score
+      score: 0, // filled in from the server's reply below
       status,
       startedAt, // Persist start time
       autoSubmitted,
@@ -365,17 +366,23 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
       captureAttemptCount: captureAttemptCountRef.current,
       lastUpdated: Date.now()
     };
-    
-    // Save Local
-    localStorage.setItem(getStorageKey(user.studentId!, examId), JSON.stringify(progress));
-    
+
+    // Save Local — answers first, so a dropped connection still leaves the work on disk.
+    const storageKey = getStorageKey(user.studentId!, examId);
+    localStorage.setItem(storageKey, JSON.stringify(progress));
+
     // Save DB
     const res = await submitStudentProgress(progress);
     if (!res.success && !bg) {
         alert("Warning: Could not save progress to server. Check internet connection.");
     }
-    
+    if (res.success) {
+      // submitStudentProgress writes the server's score back onto `progress`.
+      localStorage.setItem(storageKey, JSON.stringify(progress));
+    }
+
     if (!bg) setSyncingStatus(null);
+    return res.success ? progress.score : null;
   };
 
   const finishExam = async (force: boolean = false) => {
@@ -387,11 +394,12 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
       document.exitFullscreen?.().catch(() => {});
     }
 
-    // Calculate FINAL Score
-    const finalScore = calculateScore(activeExam, answersRef.current);
-
-    await syncProgress(activeExam.id, currentQuestionIdx, answersRef.current, 'COMPLETED', examStartTime, false, force);
-    alert(`Exam Submitted! Your Score: ${finalScore}`);
+    const finalScore = await syncProgress(activeExam.id, currentQuestionIdx, answersRef.current, 'COMPLETED', examStartTime, false, force);
+    alert(
+      finalScore === null
+        ? 'Exam Submitted! (ยังไม่ได้รับคะแนนจากเซิร์ฟเวอร์ — ตรวจสอบการเชื่อมต่อแล้วดูคะแนนในหน้ารายการข้อสอบ)'
+        : `Exam Submitted! Your Score: ${finalScore}`
+    );
 
     setActiveExam(null);
     setJustFinished(true);

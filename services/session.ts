@@ -6,11 +6,16 @@ import { User, UserRole } from '../types';
 // tab, but dies when the tab or the browser closes. On a shared lab machine that means the
 // next student can't walk up to someone else's still-open session.
 //
-// This is convenience, not authentication. The app has no session tokens — teacher and
-// student are both anon-key clients told apart by app state — so what's stored here is the
-// user record the login already returned, nothing secret.
+// The user record here is convenience — it decides which screen to render after a refresh,
+// nothing more. The token stored alongside it is the actual credential: api/ rejects any
+// request without a valid one, so editing the stored user to say TEACHER changes what this
+// browser draws and nothing about what the server will hand over.
+//
+// It lives in sessionStorage for the same reason the user record does: on a shared lab
+// machine, closing the tab must end the session for whoever sits down next.
 
 const SESSION_KEY = 'uniexam_session_user';
+const TOKEN_KEY = 'uniexam_session_token';
 
 // Every accessor is guarded: sessionStorage throws in some privacy modes, and the stored
 // JSON can be stale or hand-edited. A bad value must land the user on the login page, never
@@ -41,6 +46,33 @@ export const saveSession = (user: User) => {
 export const clearSession = () => {
   try {
     sessionStorage.removeItem(SESSION_KEY);
+    sessionStorage.removeItem(TOKEN_KEY);
+  } catch {
+    // nothing to do
+  }
+};
+
+// The signed token from api/login.ts, presented on every api/ call.
+export const loadToken = (): string | null => {
+  try {
+    return sessionStorage.getItem(TOKEN_KEY);
+  } catch {
+    return null;
+  }
+};
+
+export const saveToken = (token: string) => {
+  try {
+    sessionStorage.setItem(TOKEN_KEY, token);
+  } catch {
+    // Storage unavailable (private mode, quota). The token is held only here, so without it
+    // the next call is unauthenticated and the user is asked to sign in again.
+  }
+};
+
+export const clearToken = () => {
+  try {
+    sessionStorage.removeItem(TOKEN_KEY);
   } catch {
     // nothing to do
   }

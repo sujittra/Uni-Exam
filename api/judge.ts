@@ -11,8 +11,15 @@
 // Test cases are graded IN PARALLEL (not one-by-one) — each one is its own create+poll+
 // fetch round trip to Sphere Engine, and running them sequentially risked exceeding the
 // Vercel function's execution time limit with more than a couple of test cases.
-import { pgSelect, isSupabaseAdminConfigured } from './_supabaseAdmin.js';
+//
+// This function is also where a code question's mark is decided. Its verdict is written to
+// public.judge_results, keyed by student, question and a fingerprint of the exact code that
+// was judged, and api/db.ts scores a code answer from that row — never from the `passed`
+// flag the browser sends back with the answer, which a student could simply set to true.
+import { pgSelect, pgUpsert, isSupabaseAdminConfigured } from './_supabaseAdmin.js';
 import { buildFunctionCallSource, describeEmptyCall } from './_pyHarness.js';
+import { sessionFromRequest } from './_session.js';
+import { codeFingerprint } from './_scoring.js';
 
 const SPHERE_SUBDOMAIN = process.env.SPHERE_ENGINE_SUBDOMAIN;
 const SPHERE_TOKEN = process.env.SPHERE_ENGINE_TOKEN;
@@ -132,6 +139,14 @@ export default async function handler(req: any, res: any) {
       return;
     }
 
+    // Grading costs money and quota, and the verdict it records is what a mark is made of,
+    // so it is not something an anonymous caller gets to trigger.
+    const session = sessionFromRequest(req);
+    if (!session) {
+      res.status(401).json({ passed: false, output: 'System Error: Please sign in again — your session has expired.' });
+      return;
+    }
+
     if (!SPHERE_SUBDOMAIN || !SPHERE_TOKEN) {
       res.status(200).json({
         passed: false,
@@ -198,12 +213,35 @@ export default async function handler(req: any, res: any) {
     const results = await Promise.all(testCases.map((tc, i) => gradeTestCase(code, compilerId, tc, i, functionMode)));
 
     const fatal = results.find((r) => r.fatal);
+    const allPassed = !fatal && results.every((r) => r.passed);
+
+    // Record the verdict against the code that produced it. A student who edits their
+    // answer afterwards no longer matches this fingerprint, so the mark goes with the code
+    // it was earned by. Teachers can run the judge too (to try a question out); those runs
+    // are not anyone's answer, so they are not recorded.
+    if (session.role === 'STUDENT' && session.studentId) {
+      await pgUpsert(
+        'judge_results',
+        [{
+          student_id: session.studentId,
+          question_id: questionId,
+          code_fingerprint: codeFingerprint(code),
+          passed: allPassed,
+          updated_at: new Date().toISOString(),
+        }],
+        'student_id,question_id'
+      ).catch(() => {
+        // A failed write must not cost the student their result on screen; db.ts will just
+        // not find a passing verdict, and the console output still tells them where they
+        // stand.
+      });
+    }
+
     if (fatal) {
       res.status(200).json({ passed: false, output: `Compiling and running on remote judge...\n\n${fatal.line}\n` });
       return;
     }
 
-    const allPassed = results.every((r) => r.passed);
     const output = `Compiling and running on remote judge...\n\n${results.map((r) => r.line).join('\n')}\n`;
     res.status(200).json({ passed: allPassed, output });
   } catch (e: any) {
