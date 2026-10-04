@@ -21,9 +21,28 @@ import { buildFunctionCallSource, describeEmptyCall } from './_pyHarness.js';
 import { sessionFromRequest } from './_session.js';
 import { codeFingerprint } from './_scoring.js';
 
-const SPHERE_SUBDOMAIN = process.env.SPHERE_ENGINE_SUBDOMAIN;
-const SPHERE_TOKEN = process.env.SPHERE_ENGINE_TOKEN;
-const BASE_URL = `https://${SPHERE_SUBDOMAIN}.compilers.sphere-engine.com/api/v4`;
+// Only the subdomain belongs here — "abc123", not "https://abc123.compilers.sphere-engine.com".
+// Pasting the whole endpoint builds a host that doesn't resolve, and the only symptom used
+// to be "fetch failed" on every test case, which says nothing about where to look.
+const SPHERE_SUBDOMAIN = String(process.env.SPHERE_ENGINE_SUBDOMAIN || '')
+  .trim()
+  .replace(/^https?:\/\//, '')
+  .replace(/\.compilers\.sphere-engine\.com.*$/, '')
+  .replace(/\/.*$/, '');
+const SPHERE_TOKEN = String(process.env.SPHERE_ENGINE_TOKEN || '').trim();
+const SPHERE_HOST = `${SPHERE_SUBDOMAIN}.compilers.sphere-engine.com`;
+const BASE_URL = `https://${SPHERE_HOST}/api/v4`;
+
+// A network-level failure (host doesn't resolve, connection refused) arrives as a bare
+// "fetch failed", which reads like a bug in this app rather than a setting to correct.
+const describeTransportFailure = (e: any) => {
+  const cause = e?.cause?.code || e?.code || '';
+  if (/ENOTFOUND|EAI_AGAIN/.test(String(cause))) {
+    return `ติดต่อ ${SPHERE_HOST} ไม่ได้ (ไม่รู้จักโฮสต์นี้) — ตรวจค่า SPHERE_ENGINE_SUBDOMAIN ใน Vercel ว่าใส่เฉพาะชื่อ subdomain ไม่ใช่ URL เต็ม`;
+  }
+  if (cause) return `ติดต่อ ${SPHERE_HOST} ไม่สำเร็จ (${cause})`;
+  return `ติดต่อ ${SPHERE_HOST} ไม่สำเร็จ: ${e?.message || e}`;
+};
 
 // Sphere Engine compiler IDs (from https://sphere-engine.com/supported-languages)
 const COMPILER_IDS: Record<string, number> = {
@@ -46,12 +65,20 @@ interface GradeResult {
 const normalize = (s: any) => String(s || '').replace(/\s+/g, ' ').trim();
 
 async function createSubmission(source: string, compilerId: number, input: string): Promise<number> {
-  const res = await fetch(`${BASE_URL}/submissions?access_token=${SPHERE_TOKEN}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ compilerId, source, input, timeLimit: 10 }),
-  });
-  const data: any = await res.json();
+  let res: Response;
+  try {
+    res = await fetch(`${BASE_URL}/submissions?access_token=${SPHERE_TOKEN}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ compilerId, source, input, timeLimit: 10 }),
+    });
+  } catch (e: any) {
+    throw new Error(describeTransportFailure(e));
+  }
+  if (res.status === 401 || res.status === 403) {
+    throw new Error(`Sphere Engine ปฏิเสธ access token (HTTP ${res.status}) — ตรวจค่า SPHERE_ENGINE_TOKEN ใน Vercel`);
+  }
+  const data: any = await res.json().catch(() => null);
   if (!res.ok) throw new Error(data?.message || `Sphere Engine create-submission error ${res.status}`);
   return data.id;
 }
@@ -132,9 +159,63 @@ async function gradeTestCase(
   }
 }
 
+// GET /api/judge — is the judge actually usable right now?
+//
+// Listing the compilers costs no submission quota, so this answers "will grading work" and
+// "is the language this app asks for still on the plan" without spending anything. Teachers
+// only: it reports on a server setting, and the subdomain is not a student's business.
+// Worth having because the failures seen here have all been account-level (an expired free
+// plan, then a mistyped subdomain) and none of them were visible without burning a
+// submission to find out.
+async function reportStatus(res: any) {
+  if (!SPHERE_SUBDOMAIN || !SPHERE_TOKEN) {
+    res.status(200).json({
+      ok: false,
+      host: SPHERE_HOST,
+      error: 'ยังไม่ได้ตั้ง SPHERE_ENGINE_SUBDOMAIN หรือ SPHERE_ENGINE_TOKEN ใน Vercel',
+    });
+    return;
+  }
+
+  let response: Response;
+  try {
+    response = await fetch(`${BASE_URL}/compilers?access_token=${SPHERE_TOKEN}`);
+  } catch (e: any) {
+    res.status(200).json({ ok: false, host: SPHERE_HOST, error: describeTransportFailure(e) });
+    return;
+  }
+
+  const body: any = await response.json().catch(() => null);
+  if (!response.ok) {
+    res.status(200).json({
+      ok: false,
+      host: SPHERE_HOST,
+      status: response.status,
+      error: body?.message || `Sphere Engine ตอบ HTTP ${response.status}`,
+    });
+    return;
+  }
+
+  const compilers: any[] = body?.items || body?.compilers || (Array.isArray(body) ? body : []);
+  const available = compilers.map((c: any) => ({ id: c.id, name: c.name }));
+  const missing = Object.entries(COMPILER_IDS)
+    .filter(([, id]) => !available.some((c) => c.id === id))
+    .map(([language, id]) => `${language} (id ${id})`);
+
+  res.status(200).json({
+    ok: missing.length === 0,
+    host: SPHERE_HOST,
+    compilerCount: available.length,
+    required: COMPILER_IDS,
+    missing,
+    python3: available.find((c) => c.id === COMPILER_IDS.python3) || null,
+    java: available.find((c) => c.id === COMPILER_IDS.java) || null,
+  });
+}
+
 export default async function handler(req: any, res: any) {
   try {
-    if (req.method !== 'POST') {
+    if (req.method !== 'POST' && req.method !== 'GET') {
       res.status(405).json({ passed: false, output: 'Method not allowed' });
       return;
     }
@@ -144,6 +225,15 @@ export default async function handler(req: any, res: any) {
     const session = sessionFromRequest(req);
     if (!session) {
       res.status(401).json({ passed: false, output: 'System Error: Please sign in again — your session has expired.' });
+      return;
+    }
+
+    if (req.method === 'GET') {
+      if (session.role !== 'TEACHER') {
+        res.status(403).json({ ok: false, error: 'Teachers only.' });
+        return;
+      }
+      await reportStatus(res);
       return;
     }
 
