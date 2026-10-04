@@ -2,6 +2,7 @@ import { CodeInputMode, TestCase } from '../types';
 // Same harness the server-side judge uses, so "ทดสอบ" and "ส่งคำตอบ" evaluate a function
 // call test case identically.
 import { buildFunctionCallSource, describeEmptyCall } from '../api/_pyHarness';
+import { findUnsupportedSyntax, describeSyntaxWarnings } from '../api/_pySyntax';
 
 // Runs student Python code entirely in the browser via a Web Worker running Pyodide.
 // Zero network round-trip and no external API quota — safe to call as often as the
@@ -87,7 +88,12 @@ export const testPythonCode = async (
     return { passed: false, output: 'No sample test cases to test against.' };
   }
 
-  let finalOutput = 'Running in your browser (Pyodide)...\n\n';
+  // Pyodide is a much newer Python than the judge, so code can pass here and fail to
+  // compile on submit. Saying so now, at the top of the console, is the whole point of
+  // running this check in the browser — afterwards there is nothing to do about it.
+  const syntaxNotice = describeSyntaxWarnings(findUnsupportedSyntax(code));
+
+  let finalOutput = `${syntaxNotice}${syntaxNotice ? '\n' : ''}Running in your browser (Pyodide)...\n\n`;
   let allPassed = true;
   const functionMode = inputMode === 'function';
 

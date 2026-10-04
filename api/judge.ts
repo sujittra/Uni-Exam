@@ -20,6 +20,7 @@ import { pgSelect, pgUpsert, isSupabaseAdminConfigured } from './_supabaseAdmin.
 import { buildFunctionCallSource, describeEmptyCall } from './_pyHarness.js';
 import { sessionFromRequest } from './_session.js';
 import { codeFingerprint } from './_scoring.js';
+import { findUnsupportedSyntax, describeSyntaxWarnings } from './_pySyntax.js';
 
 // Only the subdomain belongs here — "abc123", not "https://abc123.compilers.sphere-engine.com".
 // Pasting the whole endpoint builds a host that doesn't resolve, and the only symptom used
@@ -370,7 +371,13 @@ export default async function handler(req: any, res: any) {
     }
 
     if (fatal) {
-      res.status(200).json({ passed: false, output: `Compiling and running on remote judge...\n\n${fatal.line}\n` });
+      // A 3.5 traceback for an f-string says "invalid syntax" and points at the quote,
+      // which tells a student nothing about why the same line ran in the browser.
+      const notice = describeSyntaxWarnings(findUnsupportedSyntax(code));
+      res.status(200).json({
+        passed: false,
+        output: `Compiling and running on remote judge...\n\n${notice}${notice ? '\n' : ''}${fatal.line}\n`,
+      });
       return;
     }
 
