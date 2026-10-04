@@ -241,7 +241,8 @@ export const calculateScore = (exam: Exam, answers: Record<string, any>): number
 export interface ExamActivity {
   isActive: boolean;
   title: string;
-  inProgress: number;
+  inProgress: number; // attempts written to in the last quarter hour — people actually sitting
+  staleInProgress: number; // still marked IN_PROGRESS but long abandoned
   completed: number;
 }
 
@@ -255,6 +256,7 @@ export const getExamActivity = async (examId: string): Promise<ExamActivity> => 
     isActive: !!exam?.isActive,
     title: exam?.title || '',
     inProgress: rows.filter(p => p.status === 'IN_PROGRESS').length,
+    staleInProgress: 0,
     completed: rows.filter(p => p.status === 'COMPLETED').length,
   };
 };

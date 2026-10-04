@@ -204,14 +204,30 @@ const rescoreExam = async (examId: string) => {
 //
 // `is_active` alone isn't the question worth asking — an exam can be open with nobody in
 // it, and editing that is harmless. What matters is whether anyone's attempt is live.
+//
+// Nor is the status column, on its own: IN_PROGRESS is where an attempt stays forever when
+// a student closes the tab without submitting, so an exam sat weeks ago still reports
+// people in it. A warning that fires every time is worse than none, because it teaches
+// whoever sees it to click through. The exam page autosaves every 30 seconds, so an
+// attempt that hasn't been written to in a quarter of an hour is not one anybody is
+// sitting.
+const LIVE_ATTEMPT_WINDOW_MS = 15 * 60 * 1000;
+
 const examActivity = async (examId: string) => {
   const { data: exams } = await pgSelect<any[]>('exams', `id=eq.${examId}&select=is_active,title`);
-  const { data: rows } = await pgSelect<any[]>('student_progress', `exam_id=eq.${examId}&select=status`);
+  const { data: rows } = await pgSelect<any[]>('student_progress', `exam_id=eq.${examId}&select=status,updated_at`);
   const progress = rows || [];
+  const cutoff = Date.now() - LIVE_ATTEMPT_WINDOW_MS;
+  const live = progress.filter(
+    (p: any) => p.status === 'IN_PROGRESS' && Date.parse(String(p.updated_at)) >= cutoff
+  );
   return {
     isActive: !!exams?.[0]?.is_active,
     title: exams?.[0]?.title || '',
-    inProgress: progress.filter((p: any) => p.status === 'IN_PROGRESS').length,
+    inProgress: live.length,
+    // Attempts still marked IN_PROGRESS that nobody has touched in a while — abandoned
+    // sittings, worth seeing but not worth blocking anything over.
+    staleInProgress: progress.filter((p: any) => p.status === 'IN_PROGRESS').length - live.length,
     completed: progress.filter((p: any) => p.status === 'COMPLETED').length,
   };
 };

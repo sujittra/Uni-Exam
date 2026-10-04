@@ -286,7 +286,13 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ user, onLogo
 
     const ok = window.confirm(
       `⚠️ "${activity.title}" กำลังเปิดสอบอยู่\n\n` +
-      `มีนักศึกษากำลังทำข้อสอบอยู่ ${activity.inProgress} คน (ส่งแล้ว ${activity.completed} คน)\n\n` +
+      `มีนักศึกษากำลังทำข้อสอบอยู่ ${activity.inProgress} คน ` +
+      `(บันทึกคำตอบล่าสุดภายใน 15 นาทีที่ผ่านมา)\n` +
+      `ส่งแล้ว ${activity.completed} คน` +
+      (activity.staleInProgress > 0
+        ? `\nอีก ${activity.staleInProgress} คนค้างสถานะ "กำลังทำ" ไว้นานแล้ว — ไม่นับว่ากำลังสอบ`
+        : '') +
+      `\n\n` +
       `${action}ตอนนี้จะกระทบคนที่กำลังสอบ:\n` +
       `• แก้ข้อสอบ = ข้อและตัวเลือกเปลี่ยนระหว่างที่เขากำลังตอบ\n` +
       `• คำนวณคะแนนใหม่ = คิดคะแนนจากข้อสอบชุดที่เขาไม่ได้ทำ\n\n` +
