@@ -72,6 +72,25 @@ out in: `GET /api/judge` lists the account's compilers (no submission quota spen
 `GET /api/judge?version=<compilerId>` reports what that compiler says `sys.version` is (one
 submission).
 
+## Before an exam
+
+1. **Check the judge.** Signed in as a teacher, in the browser console:
+   `fetch('/api/judge', { headers: { Authorization: 'Bearer ' + sessionStorage.getItem('uniexam_session_token') } }).then(r => r.json()).then(console.log)`
+   It costs no submission quota. `ok: true` and no `missing` means grading will work.
+2. **Check the submission pool** on the Sphere Engine dashboard. A code question costs one
+   submission per press of "ส่งคำตอบ", so a class of 118 sitting three of them needs 354 at
+   a minimum — and students press it more than once. The plan is a fixed pool, not monthly.
+3. **Read the model answers as Python 3.5** — see above. The browser warns students, but a
+   question whose own expected output assumes a newer Python will fail everyone.
+4. **Don't deploy once invigilators have the monitor open.** A tab keeps running the
+   JavaScript it loaded; if the API changes under it, it stops updating until reloaded.
+5. **Don't edit or re-grade an exam while it is being sat.** The dashboard warns and the
+   server refuses without an explicit acknowledgement, but the clean order is Close first.
+
+Closing an exam finishes off the attempts still open, marking them `auto_submitted` — those
+are the students who never pressed Submit, and the roster shows them as TIMES UP. Their
+marks are whatever had been saved, which the exam page does every 30 seconds.
+
 ## Deploying this change to an existing database
 
 Order matters: the live site talks to the database directly until the new build replaces it.
@@ -80,6 +99,9 @@ Order matters: the live site talks to the database directly until the new build 
 2. Run [migrations/001_lockdown.sql](migrations/001_lockdown.sql) in the Supabase SQL editor.
 3. In Storage → `exam-images` → Policies, remove any INSERT/UPDATE/DELETE policy granted to
    anon or public, keeping SELECT.
+4. Run [migrations/002_score_overrides.sql](migrations/002_score_overrides.sql) **before**
+   deploying the appeal feature — saving an attempt writes that column, and without it every
+   save fails. Unlike 001, this one goes first.
 
 Teacher passwords were stored in plain text. Nothing has to be reset: the first successful
 login after the deploy replaces that row with a hash of the same password. Accounts that
