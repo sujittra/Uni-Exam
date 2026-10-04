@@ -94,6 +94,28 @@ export const calculateScore = (
   overrides?: ScoreOverrides
 ): number => questions.reduce((total, q) => total + scoreQuestion(q, answers?.[q.id], codePassed, overrides), 0);
 
+// Which bar segment one student's answer to one question belongs in.
+//
+// Lives here, next to the scoring, because "correct" on the monitor has to mean the same
+// thing as "earned the marks" in the gradebook — a separate definition would be free to
+// drift, and a class-progress bar that disagrees with the scores is worse than no bar.
+// Every student counted lands in exactly one bucket, so the three always sum to the
+// population and the bar is exactly full.
+export type AnswerBucket = 'correct' | 'incorrect' | 'notAnswered';
+
+export const bucketAnswer = (
+  question: ScorableQuestion,
+  answer: any,
+  codePassed?: CodePassedFn,
+  overrides?: ScoreOverrides
+): AnswerBucket => {
+  const hasOverride = !!overrides && Object.prototype.hasOwnProperty.call(overrides, question.id);
+  // A teacher's decision counts as an answer even when there wasn't one: it is a mark
+  // either way, and leaving it out of the tally would make the bar disagree with the total.
+  if (!isAnswered(answer) && !hasOverride) return 'notAnswered';
+  return scoreQuestion(question, answer, codePassed, overrides) > 0 ? 'correct' : 'incorrect';
+};
+
 export const maxScore = (questions: ScorableQuestion[]): number =>
   questions.reduce((total, q) => total + (q.score || 0), 0);
 

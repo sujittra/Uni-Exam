@@ -126,6 +126,9 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ user, onLogo
   // Per-question tallies for the monitor, counted on the server now — the browser used to
   // work them out from every student's answers, which is why it was fetching them all.
   const [questionStats, setQuestionStats] = useState<QuestionStat[]>([]);
+  // How many students the tallies above were counted over — anyone who has answered
+  // something. Sent by the server with them, so the bar and its caption can't disagree.
+  const [activeCount, setActiveCount] = useState(0);
   
   // Monitor Filters & Sort
   const [monitorSearch, setMonitorSearch] = useState('');
@@ -172,6 +175,7 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ user, onLogo
         const data = await getLiveProgress(monitoringExamId);
         setLiveData(data.rows);
         setQuestionStats(data.questionStats);
+        setActiveCount(data.activeCount);
       };
       fetchData();
       interval = window.setInterval(fetchData, 2000); // 2s polling
@@ -701,6 +705,7 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ user, onLogo
       const data = await getLiveProgress(monitoringExamId);
       setLiveData(data.rows);
       setQuestionStats(data.questionStats);
+      setActiveCount(data.activeCount);
     } finally {
       setReopeningStudentId(null);
     }
@@ -712,8 +717,8 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ user, onLogo
     const currentExam = exams.find(e => e.id === monitoringExamId);
     if (!currentExam) return null;
 
-    // The tallies are counted on the server; this is the number of students they cover.
-    const totalActive = liveData.filter(p => (p.answeredCount || 0) > 0).length;
+    // The tallies are counted on the server, over the students they say they cover.
+    const totalActive = activeCount;
     const statsByQuestion = new Map(questionStats.map(s => [s.questionId, s]));
 
     if (totalActive === 0) return (
@@ -726,29 +731,29 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ user, onLogo
       <Card title={`Overall Class Progress (Based on ${totalActive} active students)`} className="mb-6">
         <div className="space-y-4 max-h-60 overflow-y-auto pr-2">
            {currentExam.questions.map((q, idx) => {
-              const stat = statsByQuestion.get(q.id) || { correct: 0, incorrect: 0 };
-              // Counted against everyone who has answered anything, so an unanswered
-              // question still fills the bar rather than leaving a gap.
-              const answered = stat.correct + stat.incorrect;
-              const unanswered = Math.max(0, totalActive - answered);
-              const pCorrect = (stat.correct / totalActive) * 100;
-              const pIncorrect = ((stat.incorrect + unanswered) / totalActive) * 100;
+              const stat = statsByQuestion.get(q.id) || { correct: 0, incorrect: 0, notAnswered: 0 };
+              // The three add up to totalActive, so the bar is exactly full and the numbers
+              // on hover account for every student it claims to cover.
+              const pct = (n: number) => (totalActive > 0 ? (n / totalActive) * 100 : 0);
 
               return (
-                <div key={q.id} className="flex items-center gap-4 text-sm">
+                <div key={q.id} className="flex items-center gap-4 text-sm"
+                     title={`ถูก ${stat.correct} · ผิด ${stat.incorrect} · ยังไม่ตอบ ${stat.notAnswered} (จาก ${totalActive} คน)`}>
                    <span className="w-8 font-bold text-gray-500">Q{idx+1}</span>
                    <div className="flex-1 h-3 bg-gray-100 rounded-full overflow-hidden flex">
-                      <div className="bg-green-500 h-full" style={{ width: `${pCorrect}%` }}></div>
-                      <div className="bg-red-400 h-full" style={{ width: `${pIncorrect}%` }}></div>
+                      <div className="bg-green-500 h-full" style={{ width: `${pct(stat.correct)}%` }}></div>
+                      <div className="bg-red-400 h-full" style={{ width: `${pct(stat.incorrect)}%` }}></div>
+                      <div className="bg-gray-300 h-full" style={{ width: `${pct(stat.notAnswered)}%` }}></div>
                    </div>
-                   <span className="text-xs text-gray-400 w-12 text-right">{Math.round(pCorrect)}%</span>
+                   <span className="text-xs text-gray-400 w-12 text-right">{Math.round(pct(stat.correct))}%</span>
                 </div>
               )
            })}
         </div>
         <div className="flex justify-center gap-4 mt-4 text-xs text-gray-500 border-t pt-2">
-           <div className="flex items-center gap-1"><div className="w-2 h-2 bg-green-500 rounded-full"></div> Correct</div>
-           <div className="flex items-center gap-1"><div className="w-2 h-2 bg-red-400 rounded-full"></div> Incorrect/Other</div>
+           <div className="flex items-center gap-1"><div className="w-2 h-2 bg-green-500 rounded-full"></div> ถูก</div>
+           <div className="flex items-center gap-1"><div className="w-2 h-2 bg-red-400 rounded-full"></div> ผิด</div>
+           <div className="flex items-center gap-1"><div className="w-2 h-2 bg-gray-300 rounded-full"></div> ยังไม่ตอบ</div>
         </div>
       </Card>
     );

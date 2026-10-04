@@ -662,15 +662,19 @@ export const describeAttempt = (
   return { label: 'SUBMITTED', detail: 'กดส่งคำตอบเองเรียบร้อย' };
 };
 
+// Per question, over the students who have answered anything at all. The three buckets add
+// up to activeCount, so a bar drawn from them is always exactly full.
 export interface QuestionStat {
   questionId: string;
   correct: number;
   incorrect: number;
+  notAnswered: number;
 }
 
 export interface LiveProgress {
   rows: StudentProgress[];
   questionStats: QuestionStat[];
+  activeCount: number;
 }
 
 // The monitor, polled every two seconds by each invigilator's screen. It no longer carries
@@ -680,31 +684,41 @@ export interface LiveProgress {
 // was most of the traffic an exam generated.
 export const getLiveProgress = async (examId: string): Promise<LiveProgress> => {
   if (!USE_MOCK) {
-    const data = await call<{ rows: any[]; questionStats: QuestionStat[] }>('teacher.liveProgress', { examId });
+    const data = await call<{ rows: any[]; questionStats: QuestionStat[]; activeCount: number }>(
+      'teacher.liveProgress',
+      { examId }
+    );
     return {
       rows: (data?.rows || []).map((p: any) => ({
         ...mapProgress(p, p.student_name || 'Unknown'),
         answeredCount: p.answered_count || 0,
       })),
       questionStats: data?.questionStats || [],
+      activeCount: data?.activeCount || 0,
     };
   }
 
   // Fallback to Mock
   const exam = getMockExams().find(e => e.id === examId);
   const rows = getMockProgress().filter(p => p.examId === examId);
+  const active = rows.filter(p => Object.keys(p.answers || {}).length > 0);
   const questionStats = (exam?.questions || []).map(q => {
     let correct = 0;
     let incorrect = 0;
-    rows.forEach(p => {
+    let notAnswered = 0;
+    active.forEach(p => {
       const ans = (p.answers || {})[q.id];
-      if (ans === undefined || ans === null || ans === '') return;
-      if (scoreAnswers([toScorable(q)], { [q.id]: ans }) > 0) correct++;
+      if (ans === undefined || ans === null || ans === '') notAnswered++;
+      else if (scoreAnswers([toScorable(q)], { [q.id]: ans }) > 0) correct++;
       else incorrect++;
     });
-    return { questionId: q.id, correct, incorrect };
+    return { questionId: q.id, correct, incorrect, notAnswered };
   });
-  return { rows: rows.map(p => ({ ...p, answeredCount: Object.keys(p.answers || {}).length })), questionStats };
+  return {
+    rows: rows.map(p => ({ ...p, answeredCount: Object.keys(p.answers || {}).length })),
+    questionStats,
+    activeCount: active.length,
+  };
 };
 
 export interface StudentAnswers {

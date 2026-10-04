@@ -13,6 +13,7 @@ import { sessionFromRequest, isSessionConfigured, SessionPayload } from './_sess
 import {
   calculateScore,
   scoreQuestion,
+  bucketAnswer,
   maxScore,
   clampOverride,
   isAnswered,
@@ -638,7 +639,7 @@ const actions: Record<string, Handler> = {
 
     const { data: rows } = await pgSelect<any[]>('student_progress', `exam_id=eq.${examId}&select=*`);
     const progress = rows || [];
-    if (progress.length === 0) return { rows: [], questionStats: [] };
+    if (progress.length === 0) return { rows: [], questionStats: [], activeCount: 0 };
 
     const ids = [...new Set(progress.map((p: any) => p.student_id))];
     const { data: users } = await pgSelect<any[]>(
@@ -650,31 +651,42 @@ const actions: Record<string, Handler> = {
     const questions = await gradingQuestions(examId);
     const verdicts = await loadVerdicts(ids, questions.filter((q) => q.type === 'JAVA').map((q) => q.id));
 
-    const stats = new Map(questions.map((q) => [q.id, { questionId: q.id, correct: 0, incorrect: 0 }]));
+    // Per question: how the class did, counted over the students who have answered
+    // anything at all. Every one of them lands in exactly one of the three buckets, so the
+    // three always add up to activeCount and the bar can't come out over or under full.
+    const stats = new Map(
+      questions.map((q) => [q.id, { questionId: q.id, correct: 0, incorrect: 0, notAnswered: 0 }])
+    );
+    let activeCount = 0;
+
     const summaries = progress.map((p: any) => {
       const answers = safeParseJSON(p.answers);
       const overrides = safeParseJSON(p.score_overrides);
-      const codePassed = verdicts(p.student_id);
+      const answeredCount = Object.keys(answers).length;
 
-      questions.forEach((q) => {
-        const ans = answers[q.id];
-        if (!isAnswered(ans) && !Object.prototype.hasOwnProperty.call(overrides, q.id)) return;
-        const bucket = stats.get(q.id)!;
-        if (scoreQuestion(q, ans, codePassed, overrides) > 0) bucket.correct++;
-        else bucket.incorrect++;
-      });
+      if (answeredCount > 0) {
+        activeCount++;
+        // The same rule that produced this attempt's stored score, legacy window included
+        // — counting code answers strictly here while the score counted them leniently
+        // would put the bars and the marks in plain disagreement.
+        const codePassed = isLegacyAttempt(p.started_at) ? undefined : verdicts(p.student_id);
+
+        questions.forEach((q) => {
+          stats.get(q.id)![bucketAnswer(q, answers[q.id], codePassed, overrides)]++;
+        });
+      }
 
       // Everything the monitor table draws, and nothing it doesn't.
       const { answers: _answers, score_overrides: _overrides, ...rest } = p;
       return {
         ...rest,
-        answered_count: Object.keys(answers).length,
+        answered_count: answeredCount,
         student_name: names.get(p.student_id)?.name || 'Unknown',
         student_section: names.get(p.student_id)?.section || 'N/A',
       };
     });
 
-    return { rows: summaries, questionStats: [...stats.values()] };
+    return { rows: summaries, questionStats: [...stats.values()], activeCount };
   },
 
   // One student's answers, for the Inspect panel. Separate from the monitor so the heavy
