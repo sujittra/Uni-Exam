@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { User, Exam, Question, QuestionType, StudentProgress, CodeLanguage, CodeInputMode } from '../types';
-import { saveExam, deleteExam, getExamsForTeacher, getLiveProgress, importStudents, updateExamStatus, getExamResults, uploadExamImage, getStudents, recalculateExamScores, reopenStudentProgress, updateStudent, deleteStudents, assignMajorToStudents, isAssignedToStudent, StudentImportRow } from '../services/dataService';
+import { saveExam, deleteExam, getExamsForTeacher, getLiveProgress, importStudents, updateExamStatus, getExamResults, uploadExamImage, getStudents, recalculateExamScores, reopenStudentProgress, updateStudent, deleteStudents, assignMajorToStudents, isAssignedToStudent, StudentImportRow, QuestionStat, getStudentAnswers, setQuestionScore, StudentAnswers } from '../services/dataService';
 import { examForStudent } from '../services/shuffle';
 import { loadView, saveView } from '../services/session';
 import { Card } from '../components/Card';
@@ -14,18 +14,6 @@ interface TeacherDashboardProps {
 type SortOption = 'ID' | 'NAME' | 'SECTION' | 'STATUS' | 'PROGRESS';
 type SortDirection = 'ASC' | 'DESC';
 
-// HELPER: Normalize Answer Text (Duplicated from dataService for client-side rendering)
-const normalizeAnswerText = (text: any) => {
-    if (!text) return '';
-    // Handle Object case (if coming from Java Answer Object)
-    if (typeof text === 'object' && text.code) return String(text.code).toLowerCase().replace(/\s+/g, '');
-
-    return String(text)
-      .toLowerCase()
-      .replace(/[\n\r]+/g, ',') // Convert newlines to commas
-      .replace(/\s+/g, '');     // Remove all whitespace
-  };
-
 // Helper: Safe Extract Code
 const getAnswerDisplay = (ans: any) => {
     if (typeof ans === 'object' && ans !== null) {
@@ -35,23 +23,10 @@ const getAnswerDisplay = (ans: any) => {
     return String(ans);
 };
 
-// Helper: Whether an answer earns points for a question (mirrors dataService.calculateScore)
-const isAnswerCorrect = (q: Question, ans: any): boolean => {
-    if (ans === undefined || ans === null || ans === '') return false;
-    if (q.type === QuestionType.MULTIPLE_CHOICE) {
-        return String(ans) === String(q.correctOptionIndex);
-    }
-    if (q.type === QuestionType.SHORT_ANSWER) {
-        const studentAns = normalizeAnswerText(ans);
-        return q.acceptedAnswers?.some(a => normalizeAnswerText(a) === studentAns) || false;
-    }
-    if (q.type === QuestionType.JAVA_CODE) {
-        // Passing every test case is the only thing that earns the points — see the note
-        // in dataService.calculateScore, which this mirrors.
-        return typeof ans === 'object' && ans.passed === true;
-    }
-    return false;
-};
+// Marks are no longer worked out here. The server decides them (api/_scoring.ts) and the
+// Inspect panel is told what each answer earned — it is the only side that can see a code
+// question's judge verdict, and a second copy of the rules in the browser was free to
+// drift from the one that counts.
 
 // Roster CSV: `StudentID, Name, Section, Major` — Major is optional (4th column), and a
 // header row is optional too. When a header IS present its column names decide the order,
@@ -144,6 +119,9 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ user, onLogo
      () => loadView<string>('monitorExamId', v => typeof v === 'string' && v.length > 0)
   );
   const [liveData, setLiveData] = useState<StudentProgress[]>([]);
+  // Per-question tallies for the monitor, counted on the server now — the browser used to
+  // work them out from every student's answers, which is why it was fetching them all.
+  const [questionStats, setQuestionStats] = useState<QuestionStat[]>([]);
   
   // Monitor Filters & Sort
   const [monitorSearch, setMonitorSearch] = useState('');
@@ -188,7 +166,8 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ user, onLogo
     if (activeTab === 'MONITOR' && monitoringExamId) {
       const fetchData = async () => {
         const data = await getLiveProgress(monitoringExamId);
-        setLiveData(data);
+        setLiveData(data.rows);
+        setQuestionStats(data.questionStats);
       };
       fetchData();
       interval = window.setInterval(fetchData, 2000); // 2s polling
@@ -532,7 +511,7 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ user, onLogo
         percent = 100;
         currentQ = exam.questions.length - 1;
       } else if (progress) {
-        const answerCount = Object.keys(progress.answers || {}).length;
+        const answerCount = progress.answeredCount || 0;
         const rawCount = Math.max(answerCount, (progress.currentQuestionIndex || 0));
         percent = Math.round((rawCount / exam.questions.length) * 100);
         if (percent > 100) percent = 100;
@@ -612,6 +591,52 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ user, onLogo
   const monitoringExam = useMemo(() => exams.find(e => e.id === monitoringExamId), [exams, monitoringExamId]);
 
   const [reopeningStudentId, setReopeningStudentId] = useState<string | null>(null);
+  // The inspected student's answers and per-question marks, loaded when the panel opens.
+  const [inspectDetail, setInspectDetail] = useState<StudentAnswers | null>(null);
+  const [inspectLoading, setInspectLoading] = useState(false);
+  // questionId currently being appealed, and the points typed into it.
+  const [appealQuestionId, setAppealQuestionId] = useState<string | null>(null);
+  const [appealPoints, setAppealPoints] = useState('');
+  const [appealSaving, setAppealSaving] = useState(false);
+
+  useEffect(() => {
+    if (!inspectStudentId || !monitoringExamId) {
+      setInspectDetail(null);
+      setAppealQuestionId(null);
+      return;
+    }
+    let cancelled = false;
+    setInspectLoading(true);
+    getStudentAnswers(monitoringExamId, inspectStudentId)
+      .then(d => { if (!cancelled) setInspectDetail(d); })
+      .finally(() => { if (!cancelled) setInspectLoading(false); });
+    return () => { cancelled = true; };
+  }, [inspectStudentId, monitoringExamId]);
+
+  // Saving an appeal rescores the attempt on the server; the reply carries the new total,
+  // so the panel and the monitor row agree without another round trip.
+  const saveAppeal = async (questionId: string, points: number | null) => {
+    if (!monitoringExamId || !inspectStudentId) return;
+    setAppealSaving(true);
+    try {
+      const result = await setQuestionScore(monitoringExamId, inspectStudentId, questionId, points);
+      setInspectDetail(prev => prev && ({
+        ...prev,
+        totalScore: result.total,
+        questionScores: prev.questionScores.map(s =>
+          s.questionId === questionId
+            ? { ...s, score: result.questionScore, overridden: result.overridden }
+            : s
+        ),
+      }));
+      setLiveData(prev => prev.map(p => p.studentId === inspectStudentId ? { ...p, score: result.total } : p));
+      setAppealQuestionId(null);
+    } catch (e: any) {
+      alert(`บันทึกคะแนนไม่สำเร็จ: ${e?.message || e}`);
+    } finally {
+      setAppealSaving(false);
+    }
+  };
 
   const handleReopenStudent = async (studentId: string) => {
     if (!monitoringExamId) return;
@@ -620,7 +645,8 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ user, onLogo
     try {
       await reopenStudentProgress(studentId, monitoringExamId);
       const data = await getLiveProgress(monitoringExamId);
-      setLiveData(data);
+      setLiveData(data.rows);
+      setQuestionStats(data.questionStats);
     } finally {
       setReopeningStudentId(null);
     }
@@ -632,9 +658,9 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ user, onLogo
     const currentExam = exams.find(e => e.id === monitoringExamId);
     if (!currentExam) return null;
 
-    // Filter only those who have submitted ANY answers in liveData (Active or Completed)
-    const activeStudents = liveData.filter(p => p.answers && Object.keys(p.answers).length > 0);
-    const totalActive = activeStudents.length;
+    // The tallies are counted on the server; this is the number of students they cover.
+    const totalActive = liveData.filter(p => (p.answeredCount || 0) > 0).length;
+    const statsByQuestion = new Map(questionStats.map(s => [s.questionId, s]));
 
     if (totalActive === 0) return (
        <Card className="mb-6 bg-purple-50 border-purple-100">
@@ -646,36 +672,14 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ user, onLogo
       <Card title={`Overall Class Progress (Based on ${totalActive} active students)`} className="mb-6">
         <div className="space-y-4 max-h-60 overflow-y-auto pr-2">
            {currentExam.questions.map((q, idx) => {
-              let correct = 0;
-              let incorrect = 0;
-              
-              activeStudents.forEach(student => {
-                 const ans = student.answers[q.id];
-                 let isCorrect = false;
+              const stat = statsByQuestion.get(q.id) || { correct: 0, incorrect: 0 };
+              // Counted against everyone who has answered anything, so an unanswered
+              // question still fills the bar rather than leaving a gap.
+              const answered = stat.correct + stat.incorrect;
+              const unanswered = Math.max(0, totalActive - answered);
+              const pCorrect = (stat.correct / totalActive) * 100;
+              const pIncorrect = ((stat.incorrect + unanswered) / totalActive) * 100;
 
-                 // Only check correctness if answer exists
-                 if (ans !== undefined && ans !== null && ans !== "") {
-                   if (q.type === QuestionType.MULTIPLE_CHOICE) {
-                     isCorrect = String(ans) === String(q.correctOptionIndex);
-                   } else if (q.type === QuestionType.SHORT_ANSWER) {
-                     // USE FLEXIBLE GRADING (Same as dataService)
-                     const studentAns = normalizeAnswerText(ans);
-                     isCorrect = q.acceptedAnswers?.some(a => normalizeAnswerText(a) === studentAns) || false;
-                   } else {
-                     // Code questions: only a passing judge run counts as correct.
-                     isCorrect = typeof ans === 'object' && ans.passed === true;
-                   }
-                 }
-                 
-                 // If Correct -> Increment Correct
-                 // If Wrong OR Answer is Missing/Empty -> Increment Incorrect (Ensures bar is always full width)
-                 if (isCorrect) correct++;
-                 else incorrect++;
-              });
-
-              const pCorrect = (correct / totalActive) * 100;
-              const pIncorrect = (incorrect / totalActive) * 100;
-              
               return (
                 <div key={q.id} className="flex items-center gap-4 text-sm">
                    <span className="w-8 font-bold text-gray-500">Q{idx+1}</span>
@@ -698,12 +702,16 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ user, onLogo
 
  const renderInspectModal = () => {
     if (!inspectStudentId || !monitoringExamId) return null;
-    
+
     const student = students.find(s => s.studentId === inspectStudentId);
     const progress = liveData.find(p => p.studentId === inspectStudentId);
     const exam = exams.find(e => e.id === monitoringExamId);
 
     if (!student || !exam) return null;
+
+    // Answers arrive separately from the monitor — see getStudentAnswers.
+    const detail = inspectDetail;
+    const scoreOf = new Map((detail?.questionScores || []).map(s => [s.questionId, s]));
 
     // The order this student actually saw. Nothing is stored for it — the order is derived
     // from their student id, so replaying examForStudent reproduces exactly what they got.
@@ -738,13 +746,33 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ user, onLogo
                           )}
                        </div>
                     </div>
-                    <button onClick={() => setInspectStudentId(null)} className="text-gray-400 hover:text-gray-600 font-bold text-xl px-2">&times;</button>
+                    <div className="flex items-center gap-4">
+                       {/* The total, which used to be visible only in the results export. */}
+                       {detail && (
+                          <div className="text-right">
+                             <div className="text-2xl font-extrabold text-purple-700 leading-none">
+                                {detail.totalScore}
+                                <span className="text-base font-bold text-gray-400"> / {detail.maxScore}</span>
+                             </div>
+                             <div className="text-xs text-gray-400 mt-0.5">คะแนนรวม</div>
+                          </div>
+                       )}
+                       <button onClick={() => setInspectStudentId(null)} className="text-gray-400 hover:text-gray-600 font-bold text-xl px-2">&times;</button>
+                    </div>
                 </div>
                 <div className="p-6 overflow-y-auto flex-1 space-y-6">
-                    {progress ? (
+                    {inspectLoading && !detail ? (
+                        <div className="text-center text-gray-400 py-10">กำลังโหลดคำตอบ...</div>
+                    ) : detail ? (
                         exam.questions.map((q, idx) => {
-                            const ans = progress.answers[q.id];
-                            const correct = isAnswerCorrect(q, ans);
+                            const ans = detail.answers[q.id];
+                            const marks = scoreOf.get(q.id);
+                            // The server works the marks out — it is the only side that can
+                            // see the code questions' verdicts — and says whether a teacher
+                            // has already set them by hand.
+                            const earned = marks ? marks.score : 0;
+                            const overridden = marks?.overridden || false;
+                            const correct = earned > 0;
                             // Questions are listed in the teacher's own order. When the exam
                             // shuffles, also show where this question sat for THIS student, so
                             // "ข้อ 3 ผิดนะครับ" from a student maps to the right row.
@@ -764,9 +792,53 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ user, onLogo
                                               <span className="ml-2 font-normal text-xs text-gray-400 whitespace-nowrap">(นักศึกษาเห็นเป็นข้อที่ {seenAt})</span>
                                            )}
                                         </span>
-                                        <span className={`text-xs font-bold px-2 py-0.5 rounded-full h-fit whitespace-nowrap ${correct ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-600'}`}>
-                                           {correct ? q.score : 0} / {q.score} pts
-                                        </span>
+                                        {/* Marks, and the appeal: a teacher setting them by
+                                            hand when the rules mark an answer wrongly. */}
+                                        <div className="flex items-center gap-2 h-fit whitespace-nowrap">
+                                           {appealQuestionId === q.id ? (
+                                              <>
+                                                 <input
+                                                    type="number"
+                                                    min={0}
+                                                    max={q.score}
+                                                    value={appealPoints}
+                                                    autoFocus
+                                                    onChange={(e) => setAppealPoints(e.target.value)}
+                                                    className="w-16 px-2 py-1 border-2 border-purple-300 rounded-lg text-sm text-right focus:border-purple-500 outline-none"
+                                                 />
+                                                 <span className="text-xs text-gray-400">/ {q.score}</span>
+                                                 <Button size="sm" disabled={appealSaving}
+                                                    onClick={() => saveAppeal(q.id, Math.max(0, Math.min(Number(appealPoints) || 0, q.score)))}>
+                                                    {appealSaving ? '...' : 'บันทึก'}
+                                                 </Button>
+                                                 <button onClick={() => setAppealQuestionId(null)}
+                                                    className="text-xs text-gray-400 hover:text-gray-600 px-1">ยกเลิก</button>
+                                              </>
+                                           ) : (
+                                              <>
+                                                 <span className={`text-xs font-bold px-2 py-0.5 rounded-full ${overridden ? 'bg-purple-100 text-purple-700' : correct ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-600'}`}
+                                                    title={overridden ? 'อาจารย์ปรับคะแนนข้อนี้เอง' : undefined}>
+                                                    {overridden && '✎ '}{earned} / {q.score} pts
+                                                 </span>
+                                                 <button
+                                                    onClick={() => { setAppealQuestionId(q.id); setAppealPoints(String(earned)); }}
+                                                    className="text-xs text-purple-600 hover:text-purple-800 font-medium underline"
+                                                 >
+                                                    แก้คะแนน
+                                                 </button>
+                                                 {overridden && (
+                                                    <button
+                                                       onClick={() => saveAppeal(q.id, null)}
+                                                       disabled={appealSaving}
+                                                       className="text-xs text-gray-400 hover:text-gray-600 underline"
+                                                       title="กลับไปใช้คะแนนที่ระบบตรวจให้"
+                                                    >
+                                                       คืนค่าเดิม
+                                                    </button>
+                                                 )}
+                                              </>
+                                           )}
+                                        </div>
                                     </div>
                                     {isMcq ? (
                                         <div className="space-y-1">

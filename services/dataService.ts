@@ -602,15 +602,100 @@ export const reopenStudentProgress = async (studentId: string, examId: string): 
   }
 };
 
-export const getLiveProgress = async (examId: string): Promise<StudentProgress[]> => {
+export interface QuestionStat {
+  questionId: string;
+  correct: number;
+  incorrect: number;
+}
+
+export interface LiveProgress {
+  rows: StudentProgress[];
+  questionStats: QuestionStat[];
+}
+
+// The monitor, polled every two seconds by each invigilator's screen. It no longer carries
+// anyone's answers: the per-question tallies are counted on the server and the answers
+// themselves are fetched one student at a time by getStudentAnswers, when Inspect opens.
+// With forty students and three screens, shipping the whole class's work twice a second
+// was most of the traffic an exam generated.
+export const getLiveProgress = async (examId: string): Promise<LiveProgress> => {
   if (!USE_MOCK) {
-    const rows = await call<any[]>('teacher.liveProgress', { examId });
-    return (rows || []).map((p: any) => mapProgress(p, p.student_name || 'Unknown'));
+    const data = await call<{ rows: any[]; questionStats: QuestionStat[] }>('teacher.liveProgress', { examId });
+    return {
+      rows: (data?.rows || []).map((p: any) => ({
+        ...mapProgress(p, p.student_name || 'Unknown'),
+        answeredCount: p.answered_count || 0,
+      })),
+      questionStats: data?.questionStats || [],
+    };
   }
 
   // Fallback to Mock
-  const mockProgressStore = getMockProgress();
-  return mockProgressStore.filter(p => p.examId === examId);
+  const exam = getMockExams().find(e => e.id === examId);
+  const rows = getMockProgress().filter(p => p.examId === examId);
+  const questionStats = (exam?.questions || []).map(q => {
+    let correct = 0;
+    let incorrect = 0;
+    rows.forEach(p => {
+      const ans = (p.answers || {})[q.id];
+      if (ans === undefined || ans === null || ans === '') return;
+      if (scoreAnswers([toScorable(q)], { [q.id]: ans }) > 0) correct++;
+      else incorrect++;
+    });
+    return { questionId: q.id, correct, incorrect };
+  });
+  return { rows: rows.map(p => ({ ...p, answeredCount: Object.keys(p.answers || {}).length })), questionStats };
+};
+
+export interface StudentAnswers {
+  answers: Record<string, any>;
+  questionScores: { questionId: string; score: number; max: number; overridden: boolean }[];
+  totalScore: number;
+  maxScore: number;
+}
+
+// One student's answers and what each of them scored. Separate from the monitor so the
+// expensive part is paid for only when a teacher opens Inspect, and computed on the server
+// because the code questions' verdicts never leave it.
+export const getStudentAnswers = async (examId: string, studentId: string): Promise<StudentAnswers | null> => {
+  if (!USE_MOCK) {
+    const row = await call<any>('teacher.studentAnswers', { examId, studentId });
+    if (!row) return null;
+    return {
+      answers: row.answers || {},
+      questionScores: row.question_scores || [],
+      totalScore: row.score || 0,
+      maxScore: row.max_score || 0,
+    };
+  }
+  const exam = getMockExams().find(e => e.id === examId);
+  const p = getMockProgress().find(x => x.examId === examId && x.studentId === studentId);
+  if (!exam || !p) return null;
+  return {
+    answers: p.answers || {},
+    questionScores: exam.questions.map(q => ({
+      questionId: q.id,
+      score: scoreAnswers([toScorable(q)], p.answers || {}),
+      max: q.score,
+      overridden: false,
+    })),
+    totalScore: calculateScore(exam, p.answers || {}),
+    maxScore: exam.questions.reduce((sum, q) => sum + q.score, 0),
+  };
+};
+
+// Teacher action: set one answer's marks by hand — the appeal. Passing null hands the
+// question back to the normal rules. Returns the attempt's new total.
+export const setQuestionScore = async (
+  examId: string,
+  studentId: string,
+  questionId: string,
+  score: number | null
+): Promise<{ total: number; max: number; questionScore: number; overridden: boolean }> => {
+  if (!USE_MOCK) {
+    return await call('teacher.setQuestionScore', { examId, studentId, questionId, score });
+  }
+  throw new Error('Score appeals need the server (not available in mock mode).');
 };
 
 export interface ExamResult {

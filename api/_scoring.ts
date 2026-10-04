@@ -39,11 +39,32 @@ const trustStoredVerdict: CodePassedFn = (_q, answer) =>
 
 export const isAnswered = (ans: any) => ans !== undefined && ans !== null && ans !== '';
 
+// A teacher's decision about one answer, overriding whatever the rules produce — the
+// appeal a student makes when the marking is right by the rules and wrong in fact. Kept as
+// a map of questionId to points so it survives a re-grade: rescoring recomputes everything
+// else and leaves these alone.
+export type ScoreOverrides = Record<string, number>;
+
+// An override can only award points the question is worth. Anything outside that is a
+// mistake in the UI or in a request, and silently storing it would quietly break totals.
+export const clampOverride = (points: any, questionScore: number): number => {
+  const value = Math.round(Number(points));
+  if (!Number.isFinite(value)) return 0;
+  return Math.max(0, Math.min(value, questionScore || 0));
+};
+
 export const scoreQuestion = (
   question: ScorableQuestion,
   answer: any,
-  codePassed: CodePassedFn = trustStoredVerdict
+  codePassed: CodePassedFn = trustStoredVerdict,
+  overrides?: ScoreOverrides
 ): number => {
+  // The override stands whether or not anything was answered: giving marks for a blank is
+  // the teacher's call to make, and so is taking them away from a correct-looking one.
+  if (overrides && Object.prototype.hasOwnProperty.call(overrides, question.id)) {
+    return clampOverride(overrides[question.id], question.score);
+  }
+
   if (!isAnswered(answer)) return 0;
 
   if (question.type === 'MCQ') {
@@ -69,8 +90,9 @@ export const scoreQuestion = (
 export const calculateScore = (
   questions: ScorableQuestion[],
   answers: Record<string, any>,
-  codePassed: CodePassedFn = trustStoredVerdict
-): number => questions.reduce((total, q) => total + scoreQuestion(q, answers?.[q.id], codePassed), 0);
+  codePassed: CodePassedFn = trustStoredVerdict,
+  overrides?: ScoreOverrides
+): number => questions.reduce((total, q) => total + scoreQuestion(q, answers?.[q.id], codePassed, overrides), 0);
 
 export const maxScore = (questions: ScorableQuestion[]): number =>
   questions.reduce((total, q) => total + (q.score || 0), 0);

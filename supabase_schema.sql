@@ -87,6 +87,11 @@ create table public.student_progress (
   current_question_index int default 0,
   answers jsonb default '{}'::jsonb, -- Stores answers as JSON object { "q_id": "answer" }
   score int default 0,
+  -- Per-question marks set by a teacher, overriding what the rules produce: the appeal a
+  -- student makes when the marking is right by the rules and wrong in fact. Kept beside the
+  -- answers rather than folded into `score` so that re-grading recomputes everything else
+  -- and leaves these decisions standing. { "<question_id>": <points> }
+  score_overrides jsonb not null default '{}'::jsonb,
   status text check (status in ('IDLE', 'IN_PROGRESS', 'COMPLETED')) default 'IDLE',
   started_at timestamp with time zone, -- NEW: To track strict timing
   auto_submitted boolean default false, -- True if submitted because the timer ran out, not a manual submit

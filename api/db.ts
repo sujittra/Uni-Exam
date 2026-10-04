@@ -10,7 +10,17 @@
 // POST { action, ...payload } with Authorization: Bearer <token> -> { data } | { error }
 import { pgSelect, pgInsert, pgUpdate, pgDelete, pgUpsert, storageUpload, isSupabaseAdminConfigured } from './_supabaseAdmin.js';
 import { sessionFromRequest, isSessionConfigured, SessionPayload } from './_session.js';
-import { calculateScore, codeFingerprint, CodePassedFn, ScorableQuestion } from './_scoring.js';
+import {
+  calculateScore,
+  scoreQuestion,
+  maxScore,
+  clampOverride,
+  isAnswered,
+  codeFingerprint,
+  CodePassedFn,
+  ScorableQuestion,
+  ScoreOverrides,
+} from './_scoring.js';
 import { isAssignedToStudent } from './_assignment.js';
 
 // Everything a question needs for grading, including the parts a student must never see.
@@ -119,8 +129,9 @@ const scoreFor = (
   answers: Record<string, any>,
   studentId: string,
   verdicts: VerdictLookup,
-  startedAt?: any
-) => calculateScore(questions, answers, isLegacyAttempt(startedAt) ? undefined : verdicts(studentId));
+  startedAt?: any,
+  overrides?: ScoreOverrides
+) => calculateScore(questions, answers, isLegacyAttempt(startedAt) ? undefined : verdicts(studentId), overrides);
 
 const gradingQuestions = async (examId: string): Promise<ScorableQuestion[]> => {
   const { data } = await pgSelect<any[]>('questions', `exam_id=eq.${examId}&select=${GRADING_COLUMNS}`);
@@ -161,7 +172,10 @@ const rescoreExam = async (examId: string) => {
   const updates = progress.map((p: any) => ({
     student_id: p.student_id,
     exam_id: examId,
-    score: scoreFor(questions, safeParseJSON(p.answers), p.student_id, verdicts, p.started_at),
+    // A teacher's per-question decision survives a re-grade — that is the point of keeping
+    // it beside the answers rather than folded into the stored total.
+    score: scoreFor(questions, safeParseJSON(p.answers), p.student_id, verdicts, p.started_at, safeParseJSON(p.score_overrides)),
+    score_overrides: safeParseJSON(p.score_overrides),
     // The upsert replaces the whole row, so everything else has to be carried over.
     current_question_index: p.current_question_index,
     answers: safeParseJSON(p.answers),
@@ -240,8 +254,11 @@ const actions: Record<string, Handler> = {
     // pre-lockdown window, where code answers are graded on trust.
     const { data: existingRows } = await pgSelect<any[]>(
       'student_progress',
-      `student_id=eq.${encodeURIComponent(me.studentId!)}&exam_id=eq.${examId}&select=started_at`
+      `student_id=eq.${encodeURIComponent(me.studentId!)}&exam_id=eq.${examId}&select=started_at,score_overrides`
     );
+    // An upsert replaces the whole row, so a teacher's appeal decision has to be carried
+    // across every autosave the student makes afterwards.
+    const overrides = safeParseJSON(existingRows?.[0]?.score_overrides);
     let startedAt: string | undefined = existingRows?.[0]?.started_at || undefined;
     if (!startedAt) {
       const now = Date.now();
@@ -256,7 +273,8 @@ const actions: Record<string, Handler> = {
       exam_id: examId,
       current_question_index: Number(payload?.currentQuestionIndex) || 0,
       answers,
-      score: scoreFor(questions, answers, me.studentId!, verdicts, startedAt),
+      score: scoreFor(questions, answers, me.studentId!, verdicts, startedAt, overrides),
+      score_overrides: overrides,
       status,
       started_at: startedAt,
       auto_submitted: !!payload?.autoSubmitted,
@@ -521,6 +539,13 @@ const actions: Record<string, Handler> = {
   },
 
   // ---- TEACHER: MONITORING & RESULTS -------------------------------------------------
+  // The live monitor, polled every two seconds by every invigilator's screen.
+  //
+  // It used to return each student's answers in full, because the per-question bars were
+  // counted in the browser. With a room of forty and three screens watching, that was the
+  // whole class's work crossing the network every two seconds for the sake of a few
+  // numbers. The counting happens here now and only the numbers go out; the answers
+  // themselves are fetched one student at a time, when a teacher opens Inspect.
   'teacher.liveProgress': async (payload, session) => {
     const me = requireTeacher(session);
     const examId = asUuid(payload?.examId, 'examId');
@@ -528,7 +553,7 @@ const actions: Record<string, Handler> = {
 
     const { data: rows } = await pgSelect<any[]>('student_progress', `exam_id=eq.${examId}&select=*`);
     const progress = rows || [];
-    if (progress.length === 0) return [];
+    if (progress.length === 0) return { rows: [], questionStats: [] };
 
     const ids = [...new Set(progress.map((p: any) => p.student_id))];
     const { data: users } = await pgSelect<any[]>(
@@ -536,11 +561,120 @@ const actions: Record<string, Handler> = {
       `student_id=in.(${ids.map((s) => `"${s}"`).join(',')})&select=student_id,name,section`
     );
     const names = new Map((users || []).map((u: any) => [u.student_id, u]));
-    return progress.map((p: any) => ({
-      ...p,
-      student_name: names.get(p.student_id)?.name || 'Unknown',
-      student_section: names.get(p.student_id)?.section || 'N/A',
-    }));
+
+    const questions = await gradingQuestions(examId);
+    const verdicts = await loadVerdicts(ids, questions.filter((q) => q.type === 'JAVA').map((q) => q.id));
+
+    const stats = new Map(questions.map((q) => [q.id, { questionId: q.id, correct: 0, incorrect: 0 }]));
+    const summaries = progress.map((p: any) => {
+      const answers = safeParseJSON(p.answers);
+      const overrides = safeParseJSON(p.score_overrides);
+      const codePassed = verdicts(p.student_id);
+
+      questions.forEach((q) => {
+        const ans = answers[q.id];
+        if (!isAnswered(ans) && !Object.prototype.hasOwnProperty.call(overrides, q.id)) return;
+        const bucket = stats.get(q.id)!;
+        if (scoreQuestion(q, ans, codePassed, overrides) > 0) bucket.correct++;
+        else bucket.incorrect++;
+      });
+
+      // Everything the monitor table draws, and nothing it doesn't.
+      const { answers: _answers, score_overrides: _overrides, ...rest } = p;
+      return {
+        ...rest,
+        answered_count: Object.keys(answers).length,
+        student_name: names.get(p.student_id)?.name || 'Unknown',
+        student_section: names.get(p.student_id)?.section || 'N/A',
+      };
+    });
+
+    return { rows: summaries, questionStats: [...stats.values()] };
+  },
+
+  // One student's answers, for the Inspect panel. Separate from the monitor so the heavy
+  // part is paid for only when someone actually looks at it.
+  'teacher.studentAnswers': async (payload, session) => {
+    const me = requireTeacher(session);
+    const examId = asUuid(payload?.examId, 'examId');
+    await assertOwnsExam(me, examId);
+    const studentId = String(payload?.studentId || '').trim();
+    if (!studentId) throw bad('studentId is required.');
+
+    const { data } = await pgSelect<any[]>(
+      'student_progress',
+      `exam_id=eq.${examId}&student_id=eq.${encodeURIComponent(studentId)}&select=*`
+    );
+    const row = data?.[0];
+    if (!row) return null;
+
+    const questions = await gradingQuestions(examId);
+    const verdicts = await loadVerdicts([studentId], questions.filter((q) => q.type === 'JAVA').map((q) => q.id));
+    const answers = safeParseJSON(row.answers);
+    const overrides = safeParseJSON(row.score_overrides);
+    const codePassed = verdicts(studentId);
+
+    return {
+      ...row,
+      answers,
+      score_overrides: overrides,
+      // The per-question marks the Inspect panel shows, worked out by the same rules that
+      // produced the total — the browser can't recompute the code questions, since the
+      // verdicts never leave this side.
+      question_scores: questions.map((q) => ({
+        questionId: q.id,
+        score: scoreQuestion(q, answers[q.id], codePassed, overrides),
+        max: q.score,
+        overridden: Object.prototype.hasOwnProperty.call(overrides, q.id),
+      })),
+      max_score: maxScore(questions),
+    };
+  },
+
+  // Appeal: a teacher setting one answer's marks by hand.
+  //
+  // Stored apart from the answer, so re-grading recomputes everything else and leaves this
+  // decision standing. Passing null removes it and lets the rules take the question back.
+  'teacher.setQuestionScore': async (payload, session) => {
+    const me = requireTeacher(session);
+    const examId = asUuid(payload?.examId, 'examId');
+    await assertOwnsExam(me, examId);
+    const studentId = String(payload?.studentId || '').trim();
+    const questionId = asUuid(payload?.questionId, 'questionId');
+    if (!studentId) throw bad('studentId is required.');
+
+    const questions = await gradingQuestions(examId);
+    const question = questions.find((q) => q.id === questionId);
+    if (!question) throw new HttpError(404, 'Question not found in this exam.');
+
+    const { data } = await pgSelect<any[]>(
+      'student_progress',
+      `exam_id=eq.${examId}&student_id=eq.${encodeURIComponent(studentId)}&select=*`
+    );
+    const row = data?.[0];
+    if (!row) throw new HttpError(404, 'This student has no attempt at this exam.');
+
+    const overrides: Record<string, number> = safeParseJSON(row.score_overrides);
+    if (payload?.score === null || payload?.score === undefined) delete overrides[questionId];
+    else overrides[questionId] = clampOverride(payload.score, question.score);
+
+    const answers = safeParseJSON(row.answers);
+    const verdicts = await loadVerdicts([studentId], questions.filter((q) => q.type === 'JAVA').map((q) => q.id));
+    const total = calculateScore(questions, answers, verdicts(studentId), overrides);
+
+    const { error } = await pgUpdate(
+      'student_progress',
+      `exam_id=eq.${examId}&student_id=eq.${encodeURIComponent(studentId)}`,
+      { score_overrides: overrides, score: total, updated_at: new Date().toISOString() }
+    );
+    if (error) throw new HttpError(500, error.message);
+
+    return {
+      total,
+      max: maxScore(questions),
+      questionScore: scoreQuestion(question, answers[questionId], verdicts(studentId), overrides),
+      overridden: Object.prototype.hasOwnProperty.call(overrides, questionId),
+    };
   },
 
   // Results are computed here from the stored answers, using the same rules as a live
@@ -568,7 +702,7 @@ const actions: Record<string, Handler> = {
       student_id: p.student_id,
       name: byId.get(p.student_id)?.name || 'Unknown',
       section: byId.get(p.student_id)?.section || 'N/A',
-      total_score: scoreFor(questions, safeParseJSON(p.answers), p.student_id, verdicts, p.started_at),
+      total_score: scoreFor(questions, safeParseJSON(p.answers), p.student_id, verdicts, p.started_at, safeParseJSON(p.score_overrides)),
       max_score: total,
       status: p.status,
       updated_at: p.updated_at,

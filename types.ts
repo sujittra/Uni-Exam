@@ -71,7 +71,12 @@ export interface StudentProgress {
   studentName: string;
   examId: string;
   currentQuestionIndex: number;
+  // The monitor leaves this empty: shipping every student's work to every invigilator's
+  // screen twice a second was most of the traffic an exam produced. Inspect fetches one
+  // student's answers on demand instead (getStudentAnswers), and the monitor gets
+  // answeredCount, which is all it ever used them for.
   answers: Record<string, any>; // questionId -> answer
+  answeredCount?: number;
   score: number;
   status: 'IDLE' | 'IN_PROGRESS' | 'COMPLETED';
   startedAt?: number; // Timestamp when student started the exam
