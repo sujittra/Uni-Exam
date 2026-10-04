@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { User, Exam, Question, QuestionType, StudentProgress, CodeLanguage, CodeInputMode } from '../types';
-import { saveExam, deleteExam, getExamsForTeacher, getLiveProgress, importStudents, updateExamStatus, getExamResults, uploadExamImage, getStudents, recalculateExamScores, reopenStudentProgress, updateStudent, deleteStudents, assignMajorToStudents, isAssignedToStudent, StudentImportRow, QuestionStat, getStudentAnswers, setQuestionScore, StudentAnswers, getExamActivity } from '../services/dataService';
+import { saveExam, deleteExam, getExamsForTeacher, getLiveProgress, importStudents, updateExamStatus, getExamResults, uploadExamImage, getStudents, recalculateExamScores, reopenStudentProgress, updateStudent, deleteStudents, assignMajorToStudents, isAssignedToStudent, StudentImportRow, QuestionStat, getStudentAnswers, setQuestionScore, StudentAnswers, getExamActivity, describeAttempt } from '../services/dataService';
 import { examForStudent } from '../services/shuffle';
 import { loadView, saveView } from '../services/session';
 import { Card } from '../components/Card';
@@ -392,7 +392,16 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ user, onLogo
   };
 
   const toggleExamStatus = async (id: string, currentStatus: boolean) => {
-    await updateExamStatus(id, !currentStatus);
+    const { sealed } = await updateExamStatus(id, !currentStatus);
+    // Closing finishes off whoever was still in the exam. Saying how many were caught that
+    // way matters: those are the students who never pressed Submit, and their marks are
+    // whatever had been saved by then.
+    if (currentStatus && sealed > 0) {
+      alert(
+        `ปิดข้อสอบแล้ว\n\nมีนักศึกษา ${sealed} คนยังค้างอยู่ในข้อสอบและไม่ได้กดส่ง — ระบบปิดการสอบให้แล้ว ` +
+        `และจะขึ้นสถานะ TIMES UP คะแนนของเขาคือคำตอบที่บันทึกไว้ล่าสุด`
+      );
+    }
     loadExams();
   };
 
@@ -776,9 +785,18 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ user, onLogo
                           </p>
                        )}
                        <div className="flex items-center gap-2 mt-1">
-                          <span className={`text-xs px-2 py-0.5 rounded-full font-bold ${progress?.status === 'COMPLETED' ? 'bg-green-100 text-green-700' : 'bg-yellow-100 text-yellow-700'}`}>
-                             {progress?.status || 'NOT STARTED'}
-                          </span>
+                          {(() => {
+                             const a = describeAttempt(progress, !!exam.isActive);
+                             return (
+                                <span title={a.detail} className={`text-xs px-2 py-0.5 rounded-full font-bold ${
+                                   a.label === 'SUBMITTED' ? 'bg-green-100 text-green-700' :
+                                   a.label === 'IN PROGRESS' ? 'bg-blue-100 text-blue-700' :
+                                   a.label === 'TIMES UP' ? 'bg-amber-100 text-amber-800' :
+                                   'bg-gray-100 text-gray-500'}`}>
+                                   {a.label}
+                                </span>
+                             );
+                          })()}
                           {(progress?.tabSwitchCount || 0) > 0 && (
                              <span className="text-xs px-2 py-0.5 rounded-full font-bold bg-amber-100 text-amber-700">
                                 ⚠️ Left exam view {progress!.tabSwitchCount}x
@@ -1521,6 +1539,7 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ user, onLogo
                         ? monitoringExam.durationMinutes * 60000 - (Date.now() - progress.startedAt)
                         : 0;
                      const canReopen = display.status === 'COMPLETED' && timeRemainingMs > 0;
+                     const attempt = describeAttempt(progress, !!monitoringExam?.isActive);
 
                      return (
                        <div key={user.studentId} className={`rounded-lg p-4 shadow border flex flex-col gap-3 transition-colors relative group/card cursor-pointer hover:shadow-md ${isIdle ? 'bg-gray-50 border-gray-200 opacity-75' : 'bg-white border-gray-200'}`} onClick={() => setInspectStudentId(user.studentId || null)}>
@@ -1532,10 +1551,14 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ user, onLogo
                                 <span className="text-xs bg-purple-100 text-purple-800 px-2 py-0.5 rounded-full">{user.section || 'N/A'}</span>
                              </div>
                            </div>
-                           <span className={`px-2 py-1 text-xs rounded-full h-fit font-bold border 
-                             ${display.status === 'COMPLETED' ? 'bg-green-100 text-green-700 border-green-200' : 
-                               display.status === 'IN_PROGRESS' ? 'bg-blue-100 text-blue-700 border-blue-200' : 'bg-gray-100 text-gray-500 border-gray-200'}`}>
-                             {display.status === 'IDLE' ? 'NOT STARTED' : display.status}
+                           {/* TIMES UP is its own colour on purpose: "submitted" and "ran
+                               out of time without submitting" used to look identical. */}
+                           <span title={attempt.detail} className={`px-2 py-1 text-xs rounded-full h-fit font-bold border whitespace-nowrap
+                             ${attempt.label === 'SUBMITTED' ? 'bg-green-100 text-green-700 border-green-200' :
+                               attempt.label === 'IN PROGRESS' ? 'bg-blue-100 text-blue-700 border-blue-200' :
+                               attempt.label === 'TIMES UP' ? 'bg-amber-100 text-amber-800 border-amber-300' :
+                               'bg-gray-100 text-gray-500 border-gray-200'}`}>
+                             {attempt.label}
                            </span>
                          </div>
                          

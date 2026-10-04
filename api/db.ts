@@ -502,13 +502,41 @@ const actions: Record<string, Handler> = {
     return { deleted: true };
   },
 
+  // Opening and closing an exam.
+  //
+  // Closing also finishes off the attempts still marked IN_PROGRESS. A student who closes
+  // the tab without submitting leaves their attempt in that state forever — three of Sec02's
+  // were still "in progress" three weeks after the exam ended — which makes the roster lie
+  // about who is in the room and made the live-exam guard cry wolf. Closing the exam is the
+  // moment that stops being ambiguous: time is up, and whatever they had saved is what they
+  // sat with, which is exactly what auto_submitted already means for someone whose timer ran
+  // out. Their score is left as it was; every save computed it.
   'teacher.setExamStatus': async (payload, session) => {
     const me = requireTeacher(session);
     const examId = asUuid(payload?.examId, 'examId');
     await assertOwnsExam(me, examId);
-    const { error } = await pgUpdate('exams', `id=eq.${examId}`, { is_active: !!payload?.isActive });
+    const isActive = !!payload?.isActive;
+
+    const { error } = await pgUpdate('exams', `id=eq.${examId}`, { is_active: isActive });
     if (error) throw new HttpError(500, error.message);
-    return { isActive: !!payload?.isActive };
+
+    if (isActive) return { isActive, sealed: 0 };
+
+    const { data: lingering } = await pgSelect<any[]>(
+      'student_progress',
+      `exam_id=eq.${examId}&status=eq.IN_PROGRESS&select=student_id`
+    );
+    const count = lingering?.length || 0;
+    if (count > 0) {
+      // Only the status columns are touched — never the answers, which a student could be
+      // writing at this very moment.
+      await pgUpdate('student_progress', `exam_id=eq.${examId}&status=eq.IN_PROGRESS`, {
+        status: 'COMPLETED',
+        auto_submitted: true,
+        updated_at: new Date().toISOString(),
+      });
+    }
+    return { isActive, sealed: count };
   },
 
   'teacher.uploadImage': async (payload, session) => {

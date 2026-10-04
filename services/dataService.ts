@@ -545,10 +545,13 @@ export const deleteExam = async (examId: string): Promise<void> => {
   saveMockData(STORAGE_KEYS.EXAMS, updatedExams);
 };
 
-export const updateExamStatus = async (examId: string, isActive: boolean): Promise<void> => {
+// Closing an exam also finishes off the attempts still open, and reports how many — a
+// student who closed the tab without submitting would otherwise sit at "in progress"
+// indefinitely. `sealed` is that count.
+export const updateExamStatus = async (examId: string, isActive: boolean): Promise<{ sealed: number }> => {
   if (!USE_MOCK) {
-    await call('teacher.setExamStatus', { examId, isActive });
-    return;
+    const result = await call<{ sealed: number }>('teacher.setExamStatus', { examId, isActive });
+    return { sealed: result?.sealed || 0 };
   }
   const mockExams = getMockExams();
   const index = mockExams.findIndex(e => e.id === examId);
@@ -557,6 +560,7 @@ export const updateExamStatus = async (examId: string, isActive: boolean): Promi
       updatedExams[index] = { ...updatedExams[index], isActive };
       saveMockData(STORAGE_KEYS.EXAMS, updatedExams);
   }
+  return { sealed: 0 };
 };
 
 // ==========================================
@@ -625,6 +629,37 @@ export const reopenStudentProgress = async (studentId: string, examId: string): 
     mockProgressStore[idx] = { ...mockProgressStore[idx], status: 'IN_PROGRESS', lastUpdated: Date.now() };
     saveMockData(STORAGE_KEYS.PROGRESS, mockProgressStore);
   }
+};
+
+// What an attempt's state should be called on screen.
+//
+// The stored status is one of three values and doesn't distinguish the cases a teacher
+// actually asks about: someone who ran out of time without submitting looks identical to
+// someone who pressed Submit. `auto_submitted` is what tells them apart — it is set when
+// the timer ran out on a student mid-exam, and now also when a teacher closes an exam on
+// an attempt still open. An attempt with no answers at all never really began.
+//
+// Derived rather than stored, deliberately: a fourth status column would be a second
+// source of truth about the same attempt, free to disagree with the first.
+export type AttemptLabel = 'NOT STARTED' | 'IN PROGRESS' | 'TIMES UP' | 'SUBMITTED';
+
+export const describeAttempt = (
+  progress: StudentProgress | undefined,
+  examIsActive: boolean
+): { label: AttemptLabel; detail: string } => {
+  if (!progress || progress.status === 'IDLE') {
+    return { label: 'NOT STARTED', detail: 'ยังไม่ได้เริ่มทำข้อสอบ' };
+  }
+  if (progress.status === 'IN_PROGRESS') {
+    return examIsActive
+      ? { label: 'IN PROGRESS', detail: 'กำลังทำข้อสอบอยู่' }
+      // Closing an exam seals these, so this is a row from before that was added.
+      : { label: 'TIMES UP', detail: 'ค้างอยู่ตอนที่ข้อสอบถูกปิด — ไม่ได้กดส่ง' };
+  }
+  if (progress.autoSubmitted) {
+    return { label: 'TIMES UP', detail: 'หมดเวลาหรือข้อสอบถูกปิดก่อนที่จะกดส่ง — ระบบเก็บคำตอบที่บันทึกไว้ล่าสุด' };
+  }
+  return { label: 'SUBMITTED', detail: 'กดส่งคำตอบเองเรียบร้อย' };
 };
 
 export interface QuestionStat {
