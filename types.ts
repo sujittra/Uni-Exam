@@ -63,6 +63,11 @@ export interface Exam {
   isActive: boolean;
   shuffleQuestions?: boolean; // Each student sees the questions in their own order
   shuffleOptions?: boolean; // Each student sees each MCQ's choices in their own order
+  // Leaving the exam view costs time. The first `tabSwitchLimit` exits are free; every one
+  // after that takes `tabSwitchPenaltyMinutes` off the student's clock. A penalty of 0
+  // turns the whole thing off, which is the default.
+  tabSwitchLimit?: number;
+  tabSwitchPenaltyMinutes?: number;
   createdBy?: string; // New: Track which teacher created this exam
 }
 

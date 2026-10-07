@@ -160,6 +160,8 @@ const mapExam = (e: any): Exam => ({
   isActive: e.is_active,
   shuffleQuestions: !!e.shuffle_questions,
   shuffleOptions: !!e.shuffle_options,
+  tabSwitchLimit: Number(e.tab_switch_limit) || 0,
+  tabSwitchPenaltyMinutes: Number(e.tab_switch_penalty_minutes) || 0,
   assignedSections: e.assigned_sections || [],
   assignedMajors: e.assigned_majors || [],
   createdBy: e.created_by, // Map DB column

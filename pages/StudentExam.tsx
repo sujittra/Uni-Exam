@@ -4,6 +4,7 @@ import { getExamsForStudent, submitStudentProgress, compileCode, getStudentProgr
 import { testPythonCode } from '../services/pyodideRunner';
 import { codeFingerprint } from '../api/_scoring';
 import { examForStudent, buildOptionOrders } from '../services/shuffle';
+import { effectiveDurationSeconds, timePenaltyMinutes } from '../services/examTime';
 import { Button } from '../components/Button';
 import { Card } from '../components/Card';
 import {
@@ -94,6 +95,17 @@ const examRules = (exam: Exam): ExamRule[] => {
       });
    }
 
+   // Only worth saying when it can actually happen — a limit with no penalty behind it
+   // deducts nothing, so announcing it would be a threat the exam never carries out.
+   if ((exam.tabSwitchPenaltyMinutes || 0) > 0) {
+      const free = Math.max(0, exam.tabSwitchLimit || 0);
+      const perExit = exam.tabSwitchPenaltyMinutes!;
+      rules.push({
+         th: <>ออกจากหน้าสอบได้ <strong>{free} ครั้ง</strong> หลังจากนั้นจะถูก<strong>หักเวลาสอบครั้งละ {perExit} นาที</strong> ทุกครั้งที่ออก</>,
+         en: `You may leave the exam view ${free} time(s). Every exit after that takes ${perExit} minute(s) off your remaining time.`,
+      });
+   }
+
    rules.push({
       th: 'การทุจริตหรือพยายามทุจริตจะถูกบันทึกไว้',
       en: 'Malpractice or cheating attempts will be logged.',
@@ -136,6 +148,9 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
   const hasShownCodeInfoRef = useRef(false);
   const [browserSupported] = useState(isExamBrowserSupported);
   const [captureWarning, setCaptureWarning] = useState(false);
+  // Minutes just taken off the clock for leaving the exam view. Shown as a toast, because
+  // a countdown that silently jumps backwards reads as a bug rather than a penalty.
+  const [timePenaltyNotice, setTimePenaltyNotice] = useState<number | null>(null);
   // Shown once, right after submitting: exam room PCs are shared, and the session lives
   // until the tab closes, so the next student would otherwise sit down still signed in as
   // whoever used the machine before them.
@@ -160,7 +175,9 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
         // Calculate remaining based on wall-clock time
         const now = Date.now();
         const elapsedSeconds = Math.floor((now - examStartTime) / 1000);
-        const durationSeconds = activeExam.durationMinutes * 60;
+        // Read from the ref, not state, so a penalty incurred mid-exam shortens the clock
+        // on the very next tick without the timer having to be torn down and rebuilt.
+        const durationSeconds = effectiveDurationSeconds(activeExam, tabSwitchCountRef.current);
         const remaining = durationSeconds - elapsedSeconds;
 
         if (remaining <= 0) {
@@ -187,7 +204,10 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
 
     const recordViolation = () => {
       if (isEndingExamRef.current) return; // we're exiting fullscreen ourselves on submit
+      const before = timePenaltyMinutes(activeExam, tabSwitchCountRef.current);
       tabSwitchCountRef.current += 1;
+      const lost = timePenaltyMinutes(activeExam, tabSwitchCountRef.current) - before;
+      if (lost > 0) setTimePenaltyNotice(lost);
       syncProgress(activeExam.id, currentQuestionIdx, answersRef.current, 'IN_PROGRESS', examStartTime, true);
     };
 
@@ -246,6 +266,14 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
     const t = setTimeout(() => setCaptureWarning(false), 4000);
     return () => clearTimeout(t);
   }, [captureWarning]);
+
+  // Same, for the "that cost you N minutes" toast. Held a little longer: it is the only
+  // explanation the student gets for the countdown dropping.
+  useEffect(() => {
+    if (timePenaltyNotice === null) return;
+    const t = setTimeout(() => setTimePenaltyNotice(null), 6000);
+    return () => clearTimeout(t);
+  }, [timePenaltyNotice]);
 
   // Update code output when switching questions
   useEffect(() => {
@@ -327,6 +355,26 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
         finalData = localData || dbData;
     }
 
+    // Checked again against what was just fetched, not only against the card's state: a
+    // submitted attempt must stay shut even if this tab's examStatuses are stale — closing
+    // the tab and opening a new one is exactly the route that used to get back in.
+    //
+    // The server's row decides, with finalData covering the case where the submit reached
+    // localStorage but never reached the server. Reading localData on its own would lock
+    // out the teacher's Allow Edit: that writes IN_PROGRESS to the database while this
+    // browser's copy still says COMPLETED, and the newer row is the one that counts.
+    if (dbData?.status === 'COMPLETED' || finalData?.status === 'COMPLETED') {
+        document.exitFullscreen?.().catch(() => {});
+        alert('คุณส่งข้อสอบชุดนี้ไปแล้ว ไม่สามารถกลับเข้าทำต่อได้\nYou have already submitted this exam.');
+        loadExamsAndStatus();
+        return;
+    }
+
+    // Cleared before the first save, not after it: syncProgress refuses to write anything
+    // but COMPLETED while this is set, and it is still set from whatever exam was submitted
+    // last — which would swallow the IDLE save that locks this exam's start time in.
+    isEndingExamRef.current = false;
+
     let startTime = Date.now();
     if (finalData && finalData.startedAt) {
        startTime = finalData.startedAt;
@@ -346,7 +394,6 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
     answersRef.current = finalData?.answers || {};
     tabSwitchCountRef.current = finalData?.tabSwitchCount || 0;
     captureAttemptCountRef.current = finalData?.captureAttemptCount || 0;
-    isEndingExamRef.current = false;
     hasShownCodeInfoRef.current = false;
     setCurrentQuestionIdx(finalData?.currentQuestionIndex || 0);
     setShowTOS(null);
@@ -358,6 +405,14 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
   // server now, so what comes back from submitStudentProgress is both the authoritative
   // number and the only one this page has.
   const syncProgress = async (examId: string, qIdx: number, ans: Record<string, any>, status: 'IDLE' | 'IN_PROGRESS' | 'COMPLETED', startedAt: number, bg: boolean = false, autoSubmitted: boolean = false): Promise<number | null> => {
+    // Once submit is under way nothing may write IN_PROGRESS again. The autosave timer and
+    // the screen-capture handler stay armed until finishExam drops activeExam — which it
+    // only does after a network round trip and an alert() the student has to dismiss — so
+    // without this a late save lands after the COMPLETED one and reopens the attempt, both
+    // in localStorage here and in the database. api/db.ts refuses the same thing server
+    // side; this keeps the local copy honest too.
+    if (status !== 'COMPLETED' && isEndingExamRef.current) return null;
+
     if (!bg) setSyncingStatus('Saving...');
 
     const progress: StudentProgress = {
@@ -582,6 +637,17 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
             <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 bg-red-600 text-white px-4 py-3 rounded-xl shadow-lg max-w-md text-center">
                <p className="font-bold">ตรวจพบการพยายามจับภาพหน้าจอ — บันทึกแจ้งอาจารย์แล้ว</p>
                <p className="text-xs text-red-100 mt-0.5">A screen-capture attempt was detected and has been logged for your instructor.</p>
+            </div>
+         )}
+
+         {/* Sits above the capture toast so the two can't cover each other. */}
+         {timePenaltyNotice !== null && (
+            <div className="fixed bottom-24 left-1/2 -translate-x-1/2 z-50 bg-amber-500 text-white px-4 py-3 rounded-xl shadow-lg max-w-md text-center">
+               <p className="font-bold flex items-center justify-center gap-2">
+                  <ClockIcon className="w-5 h-5" />
+                  ออกจากหน้าสอบ — หักเวลา {timePenaltyNotice} นาที
+               </p>
+               <p className="text-xs text-amber-50 mt-0.5">You left the exam view. {timePenaltyNotice} minute(s) have been deducted from your remaining time.</p>
             </div>
          )}
 

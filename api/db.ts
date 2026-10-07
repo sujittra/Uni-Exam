@@ -311,12 +311,25 @@ const actions: Record<string, Handler> = {
     // pre-lockdown window, where code answers are graded on trust.
     const { data: existingRows } = await pgSelect<any[]>(
       'student_progress',
-      `student_id=eq.${encodeURIComponent(me.studentId!)}&exam_id=eq.${examId}&select=started_at,score_overrides`
+      `student_id=eq.${encodeURIComponent(me.studentId!)}&exam_id=eq.${examId}&select=started_at,score_overrides,status,score`
     );
+    const existing = existingRows?.[0];
+
+    // A submitted attempt is final. The exam page keeps its autosave timer and its
+    // screen-capture handler armed until the submit returns, so an IN_PROGRESS save can
+    // still be in flight when the COMPLETED one lands — and this is an upsert, so landing
+    // second used to be enough to reopen a finished attempt. Giving a student back a
+    // "Continue Exam" button on an exam they have handed in is the worst of the ways that
+    // can go. The teacher's Allow Edit button is unaffected: it writes through
+    // teacher.reopenProgress, not this handler.
+    if (existing?.status === 'COMPLETED' && payload?.status !== 'COMPLETED') {
+      return { score: existing.score ?? 0 };
+    }
+
     // An upsert replaces the whole row, so a teacher's appeal decision has to be carried
     // across every autosave the student makes afterwards.
-    const overrides = safeParseJSON(existingRows?.[0]?.score_overrides);
-    let startedAt: string | undefined = existingRows?.[0]?.started_at || undefined;
+    const overrides = safeParseJSON(existing?.score_overrides);
+    let startedAt: string | undefined = existing?.started_at || undefined;
     if (!startedAt) {
       const now = Date.now();
       const claimed = payload?.startedAt ? new Date(payload.startedAt).getTime() : now;
@@ -397,6 +410,8 @@ const actions: Record<string, Handler> = {
       is_active: !!exam.isActive,
       shuffle_questions: !!exam.shuffleQuestions,
       shuffle_options: !!exam.shuffleOptions,
+      tab_switch_limit: Math.max(0, Number(exam.tabSwitchLimit) || 0),
+      tab_switch_penalty_minutes: Math.max(0, Number(exam.tabSwitchPenaltyMinutes) || 0),
       assigned_sections: asStringList(exam.assignedSections),
       assigned_majors: asStringList(exam.assignedMajors),
       created_by: me.sub,
