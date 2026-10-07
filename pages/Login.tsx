@@ -3,6 +3,7 @@ import { User, UserRole } from '../types';
 import { loginStudent, loginTeacher, registerTeacher } from '../services/dataService';
 import { Button } from '../components/Button';
 import { Card } from '../components/Card';
+import { ChevronLeftIcon, GraduationCapIcon, PresentationIcon } from '../components/Icons';
 
 interface LoginProps {
   onLogin: (user: User) => void;
@@ -85,8 +86,8 @@ export const Login: React.FC<LoginProps> = ({ onLogin }) => {
               onClick={() => handleRoleSelect(UserRole.STUDENT)}
               className="w-full p-6 rounded-xl border-2 border-purple-100 hover:border-purple-500 bg-white hover:bg-purple-50 transition-all group text-left flex items-center gap-4"
             >
-              <div className="w-12 h-12 rounded-full bg-purple-100 text-purple-600 flex items-center justify-center text-xl group-hover:bg-purple-600 group-hover:text-white transition-colors">
-                🎓
+              <div className="w-12 h-12 shrink-0 rounded-full bg-purple-100 text-purple-600 flex items-center justify-center group-hover:bg-purple-600 group-hover:text-white transition-colors">
+                <GraduationCapIcon />
               </div>
               <div>
                 <h3 className="font-bold text-gray-800 text-lg group-hover:text-purple-700">Student Login</h3>
@@ -98,8 +99,8 @@ export const Login: React.FC<LoginProps> = ({ onLogin }) => {
               onClick={() => handleRoleSelect(UserRole.TEACHER)}
               className="w-full p-6 rounded-xl border-2 border-purple-100 hover:border-purple-500 bg-white hover:bg-purple-50 transition-all group text-left flex items-center gap-4"
             >
-              <div className="w-12 h-12 rounded-full bg-purple-100 text-purple-600 flex items-center justify-center text-xl group-hover:bg-purple-600 group-hover:text-white transition-colors">
-                👨‍🏫
+              <div className="w-12 h-12 shrink-0 rounded-full bg-purple-100 text-purple-600 flex items-center justify-center group-hover:bg-purple-600 group-hover:text-white transition-colors">
+                <PresentationIcon />
               </div>
               <div>
                 <h3 className="font-bold text-gray-800 text-lg group-hover:text-purple-700">Teacher Portal</h3>
@@ -113,11 +114,15 @@ export const Login: React.FC<LoginProps> = ({ onLogin }) => {
                onClick={() => setRole(null)} 
                className="mb-6 text-sm text-gray-400 hover:text-purple-600 flex items-center gap-1 transition-colors"
              >
-               &larr; Back to Role Selection
+               <ChevronLeftIcon className="w-4 h-4" /> Back to Role Selection
              </button>
 
              <h2 className="text-xl font-bold text-gray-800 mb-6 flex items-center gap-2">
-               {role === UserRole.STUDENT ? '🎓 Student Login' : '👨‍🏫 Teacher Access'}
+               {role === UserRole.STUDENT ? (
+                 <><GraduationCapIcon className="w-6 h-6 text-purple-600" /> Student Login</>
+               ) : (
+                 <><PresentationIcon className="w-6 h-6 text-purple-600" /> Teacher Access</>
+               )}
              </h2>
 
             <form onSubmit={handleSubmit} className="space-y-5">

@@ -6,6 +6,10 @@ import { codeFingerprint } from '../api/_scoring';
 import { examForStudent, buildOptionOrders } from '../services/shuffle';
 import { Button } from '../components/Button';
 import { Card } from '../components/Card';
+import {
+  AlertTriangleIcon, CheckIcon, ChevronLeftIcon, ChevronRightIcon, ClockIcon, CodeIcon,
+  InfoIcon, LockIcon, MonitorIcon, PlayIcon, RefreshIcon, UploadIcon,
+} from '../components/Icons';
 
 interface StudentExamProps {
   user: User;
@@ -635,12 +639,14 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
                      {q.type === QuestionType.JAVA_CODE && (
                         <div className="flex flex-col gap-4">
                            <div className="flex justify-between items-center">
-                              <span className="text-xs font-bold text-gray-500">
-                                 {q.language === 'python3' ? '🐍 Python 3' : '☕ Java'}
+                              <span className="text-xs font-bold text-gray-500 flex items-center gap-1.5">
+                                 <CodeIcon className="w-4 h-4" />
+                                 {q.language === 'python3' ? 'Python 3' : 'Java'}
                               </span>
                               {q.allowFileUpload !== false && (
-                                 <label className="text-xs text-purple-600 font-medium cursor-pointer hover:text-purple-800">
-                                    📁 Upload {q.language === 'python3' ? '.py' : '.java'} file
+                                 <label className="text-xs text-purple-600 font-medium cursor-pointer hover:text-purple-800 flex items-center gap-1.5">
+                                    <UploadIcon className="w-4 h-4" />
+                                    Upload {q.language === 'python3' ? '.py' : '.java'} file
                                     <input
                                        type="file"
                                        accept={q.language === 'python3' ? '.py' : '.java'}
@@ -697,7 +703,7 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
                               <div className="flex gap-2">
                                  {q.language === 'python3' && (
                                     <Button size="sm" variant="outline" onClick={handleTestCode} disabled={isTesting || isCompiling}>
-                                       {isTesting ? 'Testing...' : '▶ ทดสอบ'}
+                                       {isTesting ? 'Testing...' : <><PlayIcon className="w-4 h-4" /> ทดสอบ</>}
                                     </Button>
                                  )}
                                  <Button
@@ -706,7 +712,12 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
                                     disabled={isCompiling || isTesting || !gate.allowed}
                                     title={gate.reason}
                                  >
-                                    {isCompiling ? 'Submitting...' : gate.allowed ? '✓ ส่งคำตอบ' : '🔒 ส่งคำตอบ'}
+                                    {isCompiling ? 'Submitting...' : (
+                                       <>
+                                          {gate.allowed ? <CheckIcon className="w-4 h-4" /> : <LockIcon className="w-4 h-4" />}
+                                          ส่งคำตอบ
+                                       </>
+                                    )}
                                  </Button>
                               </div>
                            </div>
@@ -723,7 +734,7 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
                         syncProgress(activeExam.id, currentQuestionIdx, answersRef.current, 'IN_PROGRESS', examStartTime, true);
                         setCurrentQuestionIdx(prev => prev - 1);
                      }}>
-                        &larr; Previous
+                        <ChevronLeftIcon className="w-4 h-4" /> Previous
                      </Button>
                      {isLast ? (
                         <Button onClick={() => finishExam(false)}>Submit Exam</Button>
@@ -732,7 +743,7 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
                            syncProgress(activeExam.id, currentQuestionIdx, answersRef.current, 'IN_PROGRESS', examStartTime, true);
                            setCurrentQuestionIdx(prev => prev + 1);
                         }}>
-                           Next Question &rarr;
+                           Next Question <ChevronRightIcon className="w-4 h-4" />
                         </Button>
                      )}
                   </div>
@@ -748,12 +759,12 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
                   <p className="text-xs text-gray-400 mb-4">How the code question buttons work</p>
                   <div className="space-y-3 text-sm mb-6">
                      <div className="bg-purple-50 border border-purple-100 rounded-xl p-3">
-                        <p className="font-bold text-purple-700">▶ ทดสอบ</p>
+                        <p className="font-bold text-purple-700 flex items-center gap-1.5"><PlayIcon className="w-4 h-4" /> ทดสอบ</p>
                         <p className="text-gray-600">ใช้ทดลองรันโค้ดกับตัวอย่าง test case ที่มองเห็นได้ กดกี่ครั้งก็ได้ ไม่มีผลต่อคะแนน</p>
                         <p className="text-xs text-gray-400 mt-1">Try your code against the visible sample test cases. Unlimited attempts — does not affect your score.</p>
                      </div>
                      <div className="bg-green-50 border border-green-100 rounded-xl p-3">
-                        <p className="font-bold text-green-700">✓ ส่งคำตอบ</p>
+                        <p className="font-bold text-green-700 flex items-center gap-1.5"><CheckIcon className="w-4 h-4" /> ส่งคำตอบ</p>
                         <p className="text-gray-600">ใช้เมื่อพร้อมให้ตรวจจริง (รวม test case ที่ซ่อนอยู่ด้วย) — ผลจากปุ่มนี้คือคะแนนที่คุณจะได้รับ</p>
                         <p className="text-xs text-gray-400 mt-1">Use this when you're ready to be graded for real (including hidden test cases) — this determines your score.</p>
                         <p className="text-gray-600 mt-2">ปุ่มนี้จะกดได้ก็ต่อเมื่อ <strong>"ทดสอบ" ผ่านครบทุก test case แล้ว</strong> และถ้าแก้โค้ดหลังจากนั้นต้องกด "ทดสอบ" ใหม่อีกครั้ง</p>
@@ -802,7 +813,7 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
          )}
          {!browserSupported && (
             <div className="mb-6 bg-amber-50 border border-amber-200 text-amber-900 px-4 py-3 rounded-xl flex gap-3">
-               <span className="text-lg leading-none mt-0.5">⚠️</span>
+               <AlertTriangleIcon className="w-5 h-5 shrink-0 mt-0.5 text-amber-500" />
                <div>
                   <p className="font-bold">กรุณาทำข้อสอบด้วย Google Chrome บนคอมพิวเตอร์</p>
                   <p className="text-sm mt-0.5">เบราว์เซอร์ที่คุณใช้อยู่ไม่รองรับโหมดเต็มจอ (Fullscreen) ที่ระบบคุมสอบใช้ — รวมถึงทุกเบราว์เซอร์บน iPhone/iPad หากทำข้อสอบต่อ ระบบจะยังบันทึกการออกจากหน้าสอบตามปกติ</p>
@@ -812,7 +823,7 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
          )}
          {syncingStatus && (
             <div className="mb-4 bg-blue-50 text-blue-700 px-4 py-3 rounded-lg flex items-center gap-2 animate-pulse">
-               <span>↻</span> {syncingStatus}
+               <RefreshIcon className="w-4 h-4" /> {syncingStatus}
             </div>
          )}
          
@@ -823,14 +834,17 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
                availableExams.map(exam => {
                   const status = examStatuses[exam.id];
                   const isCompleted = status?.status === 'COMPLETED';
-                  
+                  // Shuffling only reorders questions, so every student's paper is worth
+                  // the same total.
+                  const maxScore = exam.questions.reduce((sum, q) => sum + (q.score || 0), 0);
+
                   return (
                      <Card key={exam.id} className="hover:shadow-lg transition-all">
                         <div className="flex justify-between items-start mb-4">
                            <h3 className="font-bold text-lg text-gray-900">{exam.title}</h3>
                            {isCompleted && (
                               status.autoSubmitted ? (
-                                 <span className="bg-amber-100 text-amber-700 text-xs px-2 py-1 rounded-full font-bold whitespace-nowrap">⏱ Time's Up</span>
+                                 <span className="bg-amber-100 text-amber-700 text-xs px-2 py-1 rounded-full font-bold whitespace-nowrap flex items-center gap-1"><ClockIcon className="w-3.5 h-3.5" /> Time's Up</span>
                               ) : (
                                  <span className="bg-green-100 text-green-700 text-xs px-2 py-1 rounded-full font-bold">Completed</span>
                               )
@@ -852,8 +866,11 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
                            </div>
                            {isCompleted ? (
                               <div className="text-right">
-                                 <div className="text-2xl font-bold text-purple-600">{status.score}</div>
-                                 <div className="text-xs text-gray-400">Your Score</div>
+                                 <div className="text-2xl font-bold text-purple-600 leading-none">
+                                    {status.score}
+                                    <span className="text-base font-bold text-gray-400"> / {maxScore}</span>
+                                 </div>
+                                 <div className="text-xs text-gray-400 mt-1">Your Score</div>
                               </div>
                            ) : (
                               <Button onClick={() => { setTosPage(1); setShowTOS(exam); }}>
@@ -861,6 +878,15 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
                               </Button>
                            )}
                         </div>
+                        {isCompleted && (
+                           <p className="mt-3 text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 flex items-start gap-2">
+                              <InfoIcon className="w-4 h-4 shrink-0 mt-px" />
+                              <span>
+                                 คะแนนที่ได้จะถูกตรวจทานอีกครั้ง
+                                 <span className="block text-amber-700/80 mt-0.5">This score will be reviewed again.</span>
+                              </span>
+                           </p>
+                        )}
                      </Card>
                   );
                })
@@ -891,7 +917,11 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
                <div className="overflow-y-auto flex-1">
                   {tosPage === 1 && (
                      <div className={`text-sm mb-3 p-4 rounded-lg border ${browserSupported ? 'bg-blue-50 border-blue-100 text-blue-900' : 'bg-amber-50 border-amber-200 text-amber-900'}`}>
-                        <p className="font-bold">{browserSupported ? '🖥 ใช้ Google Chrome บนคอมพิวเตอร์เท่านั้น' : '⚠️ เบราว์เซอร์นี้ไม่รองรับ — กรุณาเปิดด้วย Google Chrome บนคอมพิวเตอร์'}</p>
+                        <p className="font-bold flex items-start gap-2">
+                           {browserSupported
+                              ? <><MonitorIcon className="w-5 h-5 shrink-0 mt-0.5" /> ใช้ Google Chrome บนคอมพิวเตอร์เท่านั้น</>
+                              : <><AlertTriangleIcon className="w-5 h-5 shrink-0 mt-0.5 text-amber-500" /> เบราว์เซอร์นี้ไม่รองรับ — กรุณาเปิดด้วย Google Chrome บนคอมพิวเตอร์</>}
+                        </p>
                         <p className="mt-0.5">ระบบคุมสอบต้องใช้โหมดเต็มจอ (Fullscreen) ซึ่งทุกเบราว์เซอร์บน iPhone/iPad ไม่รองรับ</p>
                         <p className={`text-xs mt-1 ${browserSupported ? 'text-blue-700/80' : 'text-amber-700/80'}`}>Take this exam in Google Chrome on a computer. Proctoring requires fullscreen mode, which no browser on iPhone/iPad supports.</p>
                      </div>
@@ -914,14 +944,14 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
                   <Button variant="secondary" onClick={() => { setShowTOS(null); setTosPage(1); }}>ยกเลิก</Button>
                   <div className="flex gap-3">
                      {tosPage > 1 && (
-                        <Button variant="secondary" onClick={() => setTosPage(p => p - 1)}>&larr; ย้อนกลับ</Button>
+                        <Button variant="secondary" onClick={() => setTosPage(p => p - 1)}><ChevronLeftIcon className="w-4 h-4" /> ย้อนกลับ</Button>
                      )}
                      {isLastPage ? (
                         // Must stay a direct click: requestFullscreen is only granted inside a
                         // user gesture.
                         <Button onClick={() => initExamSession(showTOS)}>ยอมรับ เริ่มทำข้อสอบ</Button>
                      ) : (
-                        <Button onClick={() => setTosPage(p => p + 1)}>อ่านต่อ &rarr;</Button>
+                        <Button onClick={() => setTosPage(p => p + 1)}>อ่านต่อ <ChevronRightIcon className="w-4 h-4" /></Button>
                      )}
                   </div>
                </div>
