@@ -5,6 +5,11 @@ import { examForStudent } from '../services/shuffle';
 import { loadView, saveView } from '../services/session';
 import { Card } from '../components/Card';
 import { Button } from '../components/Button';
+import {
+  AlertTriangleIcon, CameraIcon, ChevronDownIcon, ChevronLeftIcon, ChevronRightIcon,
+  ChevronUpIcon, CloseIcon, CodeIcon, CopyIcon, DownloadIcon, LiveDotIcon, PencilIcon,
+  RefreshIcon, TrashIcon, UploadIcon,
+} from '../components/Icons';
 
 interface TeacherDashboardProps {
   user: User;
@@ -17,6 +22,13 @@ const UUID_LIKE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}
 
 type SortOption = 'ID' | 'NAME' | 'SECTION' | 'STATUS' | 'PROGRESS';
 type SortDirection = 'ASC' | 'DESC';
+
+/** The caret next to the roster column currently being sorted on. */
+const SortArrow: React.FC<{ active: boolean; direction: SortDirection }> = ({ active, direction }) => {
+  if (!active) return null;
+  const Caret = direction === 'ASC' ? ChevronUpIcon : ChevronDownIcon;
+  return <Caret className="w-3.5 h-3.5 inline-block align-middle" />;
+};
 
 // Helper: Safe Extract Code
 const getAnswerDisplay = (ans: any) => {
@@ -466,8 +478,11 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ user, onLogo
       questions: editingExam.questions.map(q => q.id === qId ? { ...q, ...updates } : q)
     });
   };
-  const removeQuestion = (qId: string) => {
+  const removeQuestion = (qId: string, number: number) => {
     if (!editingExam) return;
+    // Deleting a question here has no undo, and the editor keeps every other delete
+    // behind a confirm.
+    if (!window.confirm(`ลบข้อ ${number} ออกจากข้อสอบ?`)) return;
     setEditingExam({
       ...editingExam,
       questions: editingExam.questions.filter(q => q.id !== qId)
@@ -803,13 +818,13 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ user, onLogo
                              );
                           })()}
                           {(progress?.tabSwitchCount || 0) > 0 && (
-                             <span className="text-xs px-2 py-0.5 rounded-full font-bold bg-amber-100 text-amber-700">
-                                ⚠️ Left exam view {progress!.tabSwitchCount}x
+                             <span className="text-xs px-2 py-0.5 rounded-full font-bold bg-amber-100 text-amber-700 inline-flex items-center gap-1">
+                                <AlertTriangleIcon className="w-3.5 h-3.5" /> Left exam view {progress!.tabSwitchCount}x
                              </span>
                           )}
                           {(progress?.captureAttemptCount || 0) > 0 && (
-                             <span className="text-xs px-2 py-0.5 rounded-full font-bold bg-red-100 text-red-700" title="ตรวจพบการกดปุ่มจับภาพหน้าจอ (ตรวจได้เท่าที่เบราว์เซอร์มองเห็น)">
-                                📸 Capture attempts {progress!.captureAttemptCount}x
+                             <span className="text-xs px-2 py-0.5 rounded-full font-bold bg-red-100 text-red-700 inline-flex items-center gap-1" title="ตรวจพบการกดปุ่มจับภาพหน้าจอ (ตรวจได้เท่าที่เบราว์เซอร์มองเห็น)">
+                                <CameraIcon className="w-3.5 h-3.5" /> Capture attempts {progress!.captureAttemptCount}x
                              </span>
                           )}
                        </div>
@@ -825,7 +840,7 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ user, onLogo
                              <div className="text-xs text-gray-400 mt-0.5">คะแนนรวม</div>
                           </div>
                        )}
-                       <button onClick={() => setInspectStudentId(null)} className="text-gray-400 hover:text-gray-600 font-bold text-xl px-2">&times;</button>
+                       <button onClick={() => setInspectStudentId(null)} aria-label="ปิด" className="text-gray-400 hover:text-gray-600 px-2"><CloseIcon /></button>
                     </div>
                 </div>
                 <div className="p-6 overflow-y-auto flex-1 space-y-6">
@@ -884,9 +899,9 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ user, onLogo
                                               </>
                                            ) : (
                                               <>
-                                                 <span className={`text-xs font-bold px-2 py-0.5 rounded-full ${overridden ? 'bg-purple-100 text-purple-700' : correct ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-600'}`}
+                                                 <span className={`text-xs font-bold px-2 py-0.5 rounded-full inline-flex items-center gap-1 ${overridden ? 'bg-purple-100 text-purple-700' : correct ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-600'}`}
                                                     title={overridden ? 'อาจารย์ปรับคะแนนข้อนี้เอง' : undefined}>
-                                                    {overridden && '✎ '}{earned} / {q.score} pts
+                                                    {overridden && <PencilIcon className="w-3.5 h-3.5" />}{earned} / {q.score} pts
                                                  </span>
                                                  <button
                                                     onClick={() => { setAppealQuestionId(q.id); setAppealPoints(String(earned)); }}
@@ -930,8 +945,9 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ user, onLogo
                                     )}
                                     {q.type === QuestionType.JAVA_CODE && typeof ans === 'object' && ans !== null && (
                                        <div className="mt-2 text-xs flex gap-4">
-                                          <span className="text-gray-500 font-bold">
-                                             {q.language === 'python3' ? '🐍 Python 3' : '☕ Java'}
+                                          <span className="text-gray-500 font-bold flex items-center gap-1.5">
+                                             <CodeIcon className="w-4 h-4" />
+                                             {q.language === 'python3' ? 'Python 3' : 'Java'}
                                           </span>
                                           {/* An answer with no judge output was never submitted
                                               for grading — "FAILED" would read as if their code
@@ -980,7 +996,7 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ user, onLogo
            {editingExam.isActive && (
               <div className="bg-amber-100 border-b-2 border-amber-300">
                  <div className="container mx-auto px-4 py-3 max-w-4xl">
-                    <p className="text-sm font-bold text-amber-900">🔴 ข้อสอบชุดนี้กำลังเปิดสอบอยู่</p>
+                    <p className="text-sm font-bold text-amber-900 flex items-center gap-1.5"><LiveDotIcon className="w-4 h-4 text-red-600" /> ข้อสอบชุดนี้กำลังเปิดสอบอยู่</p>
                     <p className="text-xs text-amber-800 mt-0.5">
                        ถ้ากด Save ตอนนี้ ข้อและตัวเลือกจะเปลี่ยนระหว่างที่นักศึกษากำลังตอบ และคะแนนจะถูกคิดใหม่
                        จากข้อสอบชุดที่เขาไม่ได้ทำ — ถ้ามีคนกำลังสอบอยู่ ระบบจะถามยืนยันอีกครั้งก่อนบันทึก
@@ -1117,109 +1133,115 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ user, onLogo
                     </div>
                  </div>
                  {editingExam.questions.map((q, idx) => (
-                    <Card key={q.id} className="relative group">
-                       <div className="absolute right-4 top-4 opacity-100 transition-opacity">
-                          <button onClick={() => removeQuestion(q.id)} className="text-red-400 hover:text-red-600 font-medium text-sm">Delete</button>
+                    <Card key={q.id}>
+                       {/* Delete belongs on its own header row: floated over the card it
+                           landed on top of the Score field in the corner below. */}
+                       <div className="flex items-center justify-between gap-4 pb-3 mb-4 border-b border-gray-100">
+                          <span className="bg-purple-100 text-purple-700 font-bold px-3 py-1 rounded text-sm">Q{idx+1}</span>
+                          <button
+                             onClick={() => removeQuestion(q.id, idx + 1)}
+                             title={`ลบข้อ ${idx + 1}`}
+                             className="shrink-0 inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-sm font-medium text-gray-400 hover:text-red-600 hover:bg-red-50 transition-colors"
+                          >
+                             <TrashIcon className="w-4 h-4" /> Delete
+                          </button>
                        </div>
-                       <div className="flex gap-4 items-start">
-                          <span className="bg-purple-100 text-purple-700 font-bold px-3 py-1 rounded text-sm mt-1">Q{idx+1}</span>
-                          <div className="flex-1 space-y-4">
-                             <div className="flex gap-4 items-start">
-                               <div className="flex-1 space-y-2">
-                                  <textarea className="w-full p-2 border border-gray-300 rounded font-medium h-24" value={q.text} onChange={(e) => updateQuestion(q.id, { text: e.target.value })} placeholder="Question text..."/>
-                                  {q.imageUrl ? (
-                                    <div className="flex items-center gap-4">
-                                       <img src={q.imageUrl} alt="Question" className="h-16 w-16 object-cover rounded border" />
-                                       <button onClick={() => updateQuestion(q.id, { imageUrl: '' })} className="text-xs text-red-500 font-bold">Remove Image</button>
-                                    </div>
-                                 ) : (
-                                    <input type="file" accept="image/*" onChange={(e) => handleImageUpload(q.id, e.target.files?.[0] || null)} className="block w-full text-sm text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-purple-50 file:text-purple-700 hover:file:bg-purple-100"/>
-                                 )}
-                               </div>
-                               <div className="w-24"><input type="number" className="w-full p-2 border border-gray-300 rounded text-center" value={q.score} onChange={(e) => updateQuestion(q.id, { score: Number(e.target.value) })} placeholder="Score"/></div>
-                             </div>
-                             {q.type === QuestionType.MULTIPLE_CHOICE && (
-                               <div className="space-y-2 bg-gray-50 p-3 rounded">
-                                 {q.options?.map((opt, oIdx) => (
-                                   <div key={oIdx} className="flex items-center gap-2">
-                                      <input type="radio" name={`correct_${q.id}`} checked={q.correctOptionIndex === oIdx} onChange={() => updateQuestion(q.id, { correctOptionIndex: oIdx })}/>
-                                      <input className="flex-1 p-1 border rounded text-sm" value={opt} onChange={(e) => { const newOpts = [...(q.options || [])]; newOpts[oIdx] = e.target.value; updateQuestion(q.id, { options: newOpts }); }}/>
-                                      <button onClick={() => { const newOpts = q.options?.filter((_, i) => i !== oIdx); updateQuestion(q.id, { options: newOpts, correctOptionIndex: 0 }); }} className="text-gray-400">×</button>
-                                   </div>
-                                 ))}
-                                 <Button size="sm" variant="secondary" onClick={() => updateQuestion(q.id, { options: [...(q.options||[]), `Option ${(q.options?.length||0)+1}`] })}>+ Add Option</Button>
-                               </div>
-                             )}
-                             {q.type === QuestionType.SHORT_ANSWER && (
-                               <div className="space-y-2 bg-gray-50 p-3 rounded">
-                                  <p className="text-xs font-bold text-gray-500 uppercase">Accepted Answers</p>
-                                  <textarea className="w-full p-2 border rounded text-sm" placeholder="Enter acceptable answers separated by commas" value={q.acceptedAnswers?.join(', ')} onChange={(e) => updateQuestion(q.id, { acceptedAnswers: e.target.value.split(',').map(s => s.trim()) })} />
-                               </div>
-                             )}
-                             {q.type === QuestionType.JAVA_CODE && (
-                               <div className="space-y-2 bg-blue-50 p-3 rounded border border-blue-100">
-                                  <div className="flex items-center justify-between">
-                                     <p className="text-xs font-bold text-blue-700 uppercase">Test Cases</p>
-                                     <div className="flex items-center gap-4">
-                                        <label className="flex items-center gap-1 text-xs font-bold text-blue-700 uppercase cursor-pointer">
-                                           <input
-                                              type="checkbox"
-                                              checked={q.allowFileUpload !== false}
-                                              onChange={(e) => updateQuestion(q.id, { allowFileUpload: e.target.checked })}
-                                           />
-                                           Allow File Upload
-                                        </label>
-                                        <div className="flex items-center gap-2">
-                                           <label className="text-xs font-bold text-blue-700 uppercase">Language</label>
-                                           <select
-                                              className="p-1 border rounded text-sm bg-white"
-                                              value={q.language || 'java'}
-                                              onChange={(e) => updateQuestion(q.id, { language: e.target.value as CodeLanguage })}
-                                           >
-                                              <option value="java">Java</option>
-                                              <option value="python3">Python 3</option>
-                                           </select>
-                                        </div>
-                                        {/* 'function' mode compiles the call expression into the source, which only
-                                            the Python harness knows how to build — so it's offered for Python only. */}
-                                        {q.language === 'python3' && (
-                                          <div className="flex items-center gap-2">
-                                             <label className="text-xs font-bold text-blue-700 uppercase">Test Input</label>
-                                             <select
-                                                className="p-1 border rounded text-sm bg-white"
-                                                value={q.inputMode || 'stdin'}
-                                                onChange={(e) => updateQuestion(q.id, { inputMode: e.target.value as CodeInputMode })}
-                                             >
-                                                <option value="stdin">stdin</option>
-                                                <option value="function">Function call</option>
-                                             </select>
-                                          </div>
-                                        )}
-                                     </div>
-                                  </div>
-                                  {isFunctionMode(q) && (
-                                    <div className="bg-white border border-blue-200 rounded p-2 text-xs text-gray-600">
-                                       <p>ช่องซ้ายคือ <strong>ประโยคเรียกฟังก์ชัน</strong> เช่น <code className="bg-gray-100 px-1 rounded">rectangle_area(4, 5)</code> — นักศึกษาเขียนแค่ตัวฟังก์ชัน ระบบจะเรียกให้เอง และรับได้ทั้งแบบ <code className="bg-gray-100 px-1 rounded">return</code> ค่า หรือ <code className="bg-gray-100 px-1 rounded">print</code> ออกมา</p>
-                                       <p className="text-gray-400 mt-0.5">The left field is a call expression, not stdin. Students write only the function; both returning and printing the answer pass.</p>
-                                    </div>
-                                  )}
-                                  {q.testCases?.map((tc, tcIdx) => (
-                                    <div key={tcIdx} className="grid grid-cols-2 gap-2 mb-2">
-                                       <input className="p-1 border rounded text-sm font-mono" placeholder={isFunctionMode(q) ? "Call e.g. rectangle_area(4, 5)" : "Input"} value={tc.input} onChange={(e) => { const newTC = [...(q.testCases || [])]; newTC[tcIdx] = { ...newTC[tcIdx], input: e.target.value }; updateQuestion(q.id, { testCases: newTC }); }} />
-                                       <div className="flex gap-1 items-center">
-                                          <input className="flex-1 p-1 border rounded text-sm font-mono" placeholder="Output" value={tc.output} onChange={(e) => { const newTC = [...(q.testCases || [])]; newTC[tcIdx] = { ...newTC[tcIdx], output: e.target.value }; updateQuestion(q.id, { testCases: newTC }); }} />
-                                          <label className="flex items-center gap-1 text-xs text-blue-700 font-bold whitespace-nowrap cursor-pointer" title="Hide this test case's input/expected/actual from students; it still counts toward grading">
-                                             <input type="checkbox" checked={!!tc.hidden} onChange={(e) => { const newTC = [...(q.testCases || [])]; newTC[tcIdx] = { ...newTC[tcIdx], hidden: e.target.checked }; updateQuestion(q.id, { testCases: newTC }); }} />
-                                             Hidden
-                                          </label>
-                                          <button onClick={() => { const newTC = q.testCases?.filter((_, i) => i !== tcIdx); updateQuestion(q.id, { testCases: newTC }); }} className="text-red-400 font-bold px-2">×</button>
-                                       </div>
-                                    </div>
-                                  ))}
-                                  <Button size="sm" variant="secondary" onClick={() => updateQuestion(q.id, { testCases: [...(q.testCases||[]), {input:'', output:''}] })}>+ Add Test Case</Button>
-                               </div>
-                             )}
+                       <div className="space-y-4">
+                          <div className="flex gap-4 items-start">
+                            <div className="flex-1 space-y-2">
+                               <textarea className="w-full p-2 border border-gray-300 rounded font-medium h-24" value={q.text} onChange={(e) => updateQuestion(q.id, { text: e.target.value })} placeholder="Question text..."/>
+                               {q.imageUrl ? (
+                                 <div className="flex items-center gap-4">
+                                    <img src={q.imageUrl} alt="Question" className="h-16 w-16 object-cover rounded border" />
+                                    <button onClick={() => updateQuestion(q.id, { imageUrl: '' })} className="text-xs text-red-500 font-bold">Remove Image</button>
+                                 </div>
+                              ) : (
+                                 <input type="file" accept="image/*" onChange={(e) => handleImageUpload(q.id, e.target.files?.[0] || null)} className="block w-full text-sm text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-purple-50 file:text-purple-700 hover:file:bg-purple-100"/>
+                              )}
+                            </div>
+                            <div className="w-24"><input type="number" className="w-full p-2 border border-gray-300 rounded text-center" value={q.score} onChange={(e) => updateQuestion(q.id, { score: Number(e.target.value) })} placeholder="Score"/></div>
                           </div>
+                          {q.type === QuestionType.MULTIPLE_CHOICE && (
+                            <div className="space-y-2 bg-gray-50 p-3 rounded">
+                              {q.options?.map((opt, oIdx) => (
+                                <div key={oIdx} className="flex items-center gap-2">
+                                   <input type="radio" name={`correct_${q.id}`} checked={q.correctOptionIndex === oIdx} onChange={() => updateQuestion(q.id, { correctOptionIndex: oIdx })}/>
+                                   <input className="flex-1 p-1 border rounded text-sm" value={opt} onChange={(e) => { const newOpts = [...(q.options || [])]; newOpts[oIdx] = e.target.value; updateQuestion(q.id, { options: newOpts }); }}/>
+                                   <button onClick={() => { const newOpts = q.options?.filter((_, i) => i !== oIdx); updateQuestion(q.id, { options: newOpts, correctOptionIndex: 0 }); }} aria-label="ลบตัวเลือก" className="text-gray-400 hover:text-gray-600"><CloseIcon className="w-4 h-4" /></button>
+                                </div>
+                              ))}
+                              <Button size="sm" variant="secondary" onClick={() => updateQuestion(q.id, { options: [...(q.options||[]), `Option ${(q.options?.length||0)+1}`] })}>+ Add Option</Button>
+                            </div>
+                          )}
+                          {q.type === QuestionType.SHORT_ANSWER && (
+                            <div className="space-y-2 bg-gray-50 p-3 rounded">
+                               <p className="text-xs font-bold text-gray-500 uppercase">Accepted Answers</p>
+                               <textarea className="w-full p-2 border rounded text-sm" placeholder="Enter acceptable answers separated by commas" value={q.acceptedAnswers?.join(', ')} onChange={(e) => updateQuestion(q.id, { acceptedAnswers: e.target.value.split(',').map(s => s.trim()) })} />
+                            </div>
+                          )}
+                          {q.type === QuestionType.JAVA_CODE && (
+                            <div className="space-y-2 bg-blue-50 p-3 rounded border border-blue-100">
+                               <div className="flex items-center justify-between">
+                                  <p className="text-xs font-bold text-blue-700 uppercase">Test Cases</p>
+                                  <div className="flex items-center gap-4">
+                                     <label className="flex items-center gap-1 text-xs font-bold text-blue-700 uppercase cursor-pointer">
+                                        <input
+                                           type="checkbox"
+                                           checked={q.allowFileUpload !== false}
+                                           onChange={(e) => updateQuestion(q.id, { allowFileUpload: e.target.checked })}
+                                        />
+                                        Allow File Upload
+                                     </label>
+                                     <div className="flex items-center gap-2">
+                                        <label className="text-xs font-bold text-blue-700 uppercase">Language</label>
+                                        <select
+                                           className="p-1 border rounded text-sm bg-white"
+                                           value={q.language || 'java'}
+                                           onChange={(e) => updateQuestion(q.id, { language: e.target.value as CodeLanguage })}
+                                        >
+                                           <option value="java">Java</option>
+                                           <option value="python3">Python 3</option>
+                                        </select>
+                                     </div>
+                                     {/* 'function' mode compiles the call expression into the source, which only
+                                         the Python harness knows how to build — so it's offered for Python only. */}
+                                     {q.language === 'python3' && (
+                                       <div className="flex items-center gap-2">
+                                          <label className="text-xs font-bold text-blue-700 uppercase">Test Input</label>
+                                          <select
+                                             className="p-1 border rounded text-sm bg-white"
+                                             value={q.inputMode || 'stdin'}
+                                             onChange={(e) => updateQuestion(q.id, { inputMode: e.target.value as CodeInputMode })}
+                                          >
+                                             <option value="stdin">stdin</option>
+                                             <option value="function">Function call</option>
+                                          </select>
+                                       </div>
+                                     )}
+                                  </div>
+                               </div>
+                               {isFunctionMode(q) && (
+                                 <div className="bg-white border border-blue-200 rounded p-2 text-xs text-gray-600">
+                                    <p>ช่องซ้ายคือ <strong>ประโยคเรียกฟังก์ชัน</strong> เช่น <code className="bg-gray-100 px-1 rounded">rectangle_area(4, 5)</code> — นักศึกษาเขียนแค่ตัวฟังก์ชัน ระบบจะเรียกให้เอง และรับได้ทั้งแบบ <code className="bg-gray-100 px-1 rounded">return</code> ค่า หรือ <code className="bg-gray-100 px-1 rounded">print</code> ออกมา</p>
+                                    <p className="text-gray-400 mt-0.5">The left field is a call expression, not stdin. Students write only the function; both returning and printing the answer pass.</p>
+                                 </div>
+                               )}
+                               {q.testCases?.map((tc, tcIdx) => (
+                                 <div key={tcIdx} className="grid grid-cols-2 gap-2 mb-2">
+                                    <input className="p-1 border rounded text-sm font-mono" placeholder={isFunctionMode(q) ? "Call e.g. rectangle_area(4, 5)" : "Input"} value={tc.input} onChange={(e) => { const newTC = [...(q.testCases || [])]; newTC[tcIdx] = { ...newTC[tcIdx], input: e.target.value }; updateQuestion(q.id, { testCases: newTC }); }} />
+                                    <div className="flex gap-1 items-center">
+                                       <input className="flex-1 p-1 border rounded text-sm font-mono" placeholder="Output" value={tc.output} onChange={(e) => { const newTC = [...(q.testCases || [])]; newTC[tcIdx] = { ...newTC[tcIdx], output: e.target.value }; updateQuestion(q.id, { testCases: newTC }); }} />
+                                       <label className="flex items-center gap-1 text-xs text-blue-700 font-bold whitespace-nowrap cursor-pointer" title="Hide this test case's input/expected/actual from students; it still counts toward grading">
+                                          <input type="checkbox" checked={!!tc.hidden} onChange={(e) => { const newTC = [...(q.testCases || [])]; newTC[tcIdx] = { ...newTC[tcIdx], hidden: e.target.checked }; updateQuestion(q.id, { testCases: newTC }); }} />
+                                          Hidden
+                                       </label>
+                                       <button onClick={() => { const newTC = q.testCases?.filter((_, i) => i !== tcIdx); updateQuestion(q.id, { testCases: newTC }); }} aria-label="ลบ test case" className="text-red-400 hover:text-red-600 px-2"><CloseIcon className="w-4 h-4" /></button>
+                                    </div>
+                                 </div>
+                               ))}
+                               <Button size="sm" variant="secondary" onClick={() => updateQuestion(q.id, { testCases: [...(q.testCases||[]), {input:'', output:''}] })}>+ Add Test Case</Button>
+                            </div>
+                          )}
                        </div>
                     </Card>
                  ))}
@@ -1280,7 +1302,7 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ user, onLogo
                         the Close button right there is almost always what was wanted. */}
                     {exam.isActive && (
                       <div className="mb-3 bg-amber-50 border border-amber-200 rounded-xl p-2.5">
-                        <p className="text-xs font-bold text-amber-800">🔴 กำลังเปิดสอบอยู่</p>
+                        <p className="text-xs font-bold text-amber-800 flex items-center gap-1.5"><LiveDotIcon className="w-4 h-4 text-red-600" /> กำลังเปิดสอบอยู่</p>
                         <p className="text-xs text-amber-700 mt-0.5 leading-relaxed">
                           อย่าแก้ข้อสอบหรือกด Re-grade ตอนนี้ — ข้อจะเปลี่ยนระหว่างที่นักศึกษากำลังตอบ
                           และคะแนนจะถูกคิดจากข้อสอบชุดที่เขาไม่ได้ทำ กด Close ก่อน
@@ -1295,12 +1317,12 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ user, onLogo
                         onClick={() => handleDuplicateExam(exam)}
                         disabled={isSaving}
                         title="สร้างสำเนาข้อสอบชุดนี้เพื่อนำไปแก้เป็นอีกชุด"
-                        className="col-span-2 text-sm text-gray-600 hover:bg-gray-50 py-1 rounded border border-gray-200 disabled:opacity-50"
+                        className="col-span-2 text-sm text-gray-600 hover:bg-gray-50 py-1 rounded border border-gray-200 disabled:opacity-50 flex items-center justify-center gap-1.5"
                       >
-                        📋 Duplicate
+                        <CopyIcon className="w-4 h-4" /> Duplicate
                       </button>
-                      <button onClick={() => handleExportResults(exam.id, exam.title)} className="col-span-2 text-sm text-purple-600 hover:bg-purple-50 py-1 rounded border border-purple-200">📄 Export Scores</button>
-                      <button onClick={() => handleRecalculateScores(exam.id)} className="col-span-2 text-xs text-blue-500 hover:text-blue-700 mt-1 font-medium">↺ Re-grade Scores</button>
+                      <button onClick={() => handleExportResults(exam.id, exam.title)} className="col-span-2 text-sm text-purple-600 hover:bg-purple-50 py-1 rounded border border-purple-200 flex items-center justify-center gap-1.5"><DownloadIcon className="w-4 h-4" /> Export Scores</button>
+                      <button onClick={() => handleRecalculateScores(exam.id)} className="col-span-2 text-xs text-blue-500 hover:text-blue-700 mt-1 font-medium flex items-center justify-center gap-1.5"><RefreshIcon className="w-3.5 h-3.5" /> Re-grade Scores</button>
                       <button onClick={() => handleDeleteExam(exam.id)} className="col-span-2 text-xs text-red-400 hover:text-red-600 mt-1">Delete Exam</button>
                     </div>
                   </div>
@@ -1324,7 +1346,7 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ user, onLogo
                 </div>
                 <div className="flex flex-wrap items-center gap-3">
                    <label className="inline-flex items-center gap-2 px-4 py-2 rounded-lg border border-purple-200 text-purple-700 text-sm font-medium cursor-pointer hover:bg-purple-50">
-                      📂 เลือกไฟล์ CSV
+                      <UploadIcon className="w-4 h-4" /> เลือกไฟล์ CSV
                       <input
                          type="file"
                          accept=".csv,text/csv"
@@ -1410,16 +1432,16 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ user, onLogo
                           />
                        </th>
                        <th className="px-6 py-3 cursor-pointer hover:bg-gray-100" onClick={() => handleRosterSort('studentId')}>
-                          Student ID {rosterSortConfig.key === 'studentId' && (rosterSortConfig.direction === 'ASC' ? '▲' : '▼')}
+                          Student ID <SortArrow active={rosterSortConfig.key === 'studentId'} direction={rosterSortConfig.direction} />
                        </th>
                        <th className="px-6 py-3 cursor-pointer hover:bg-gray-100" onClick={() => handleRosterSort('name')}>
-                          Name {rosterSortConfig.key === 'name' && (rosterSortConfig.direction === 'ASC' ? '▲' : '▼')}
+                          Name <SortArrow active={rosterSortConfig.key === 'name'} direction={rosterSortConfig.direction} />
                        </th>
                        <th className="px-6 py-3 cursor-pointer hover:bg-gray-100" onClick={() => handleRosterSort('section')}>
-                          Section {rosterSortConfig.key === 'section' && (rosterSortConfig.direction === 'ASC' ? '▲' : '▼')}
+                          Section <SortArrow active={rosterSortConfig.key === 'section'} direction={rosterSortConfig.direction} />
                        </th>
                        <th className="px-6 py-3 cursor-pointer hover:bg-gray-100" onClick={() => handleRosterSort('major')}>
-                          สาขา {rosterSortConfig.key === 'major' && (rosterSortConfig.direction === 'ASC' ? '▲' : '▼')}
+                          สาขา <SortArrow active={rosterSortConfig.key === 'major'} direction={rosterSortConfig.direction} />
                        </th>
                        <th className="px-6 py-3 text-right">จัดการ</th>
                      </tr>
@@ -1461,17 +1483,17 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ user, onLogo
                        <button
                           onClick={() => setRosterPage(rosterCurrentPage - 1)}
                           disabled={rosterCurrentPage <= 1}
-                          className="px-3 py-1 rounded border bg-white disabled:opacity-40 disabled:cursor-not-allowed hover:bg-gray-100"
+                          className="px-3 py-1 rounded border bg-white disabled:opacity-40 disabled:cursor-not-allowed hover:bg-gray-100 inline-flex items-center gap-1"
                        >
-                          ← ก่อนหน้า
+                          <ChevronLeftIcon className="w-4 h-4" /> ก่อนหน้า
                        </button>
                        <span className="text-gray-600">หน้า {rosterCurrentPage} / {rosterTotalPages}</span>
                        <button
                           onClick={() => setRosterPage(rosterCurrentPage + 1)}
                           disabled={rosterCurrentPage >= rosterTotalPages}
-                          className="px-3 py-1 rounded border bg-white disabled:opacity-40 disabled:cursor-not-allowed hover:bg-gray-100"
+                          className="px-3 py-1 rounded border bg-white disabled:opacity-40 disabled:cursor-not-allowed hover:bg-gray-100 inline-flex items-center gap-1"
                        >
-                          ถัดไป →
+                          ถัดไป <ChevronRightIcon className="w-4 h-4" />
                        </button>
                     </div>
                  </div>
@@ -1577,14 +1599,14 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ user, onLogo
                          </div>
 
                          {(progress?.tabSwitchCount || 0) > 0 && (
-                           <div className="text-xs font-bold text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-2 py-1 w-fit">
-                             ⚠️ Left exam view {progress!.tabSwitchCount}x
+                           <div className="text-xs font-bold text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-2 py-1 w-fit flex items-center gap-1">
+                             <AlertTriangleIcon className="w-3.5 h-3.5" /> Left exam view {progress!.tabSwitchCount}x
                            </div>
                          )}
 
                          {(progress?.captureAttemptCount || 0) > 0 && (
-                           <div className="text-xs font-bold text-red-700 bg-red-50 border border-red-200 rounded-lg px-2 py-1 w-fit" title="ตรวจพบการกดปุ่มจับภาพหน้าจอ (ตรวจได้เท่าที่เบราว์เซอร์มองเห็น)">
-                             📸 Capture attempts {progress!.captureAttemptCount}x
+                           <div className="text-xs font-bold text-red-700 bg-red-50 border border-red-200 rounded-lg px-2 py-1 w-fit flex items-center gap-1" title="ตรวจพบการกดปุ่มจับภาพหน้าจอ (ตรวจได้เท่าที่เบราว์เซอร์มองเห็น)">
+                             <CameraIcon className="w-3.5 h-3.5" /> Capture attempts {progress!.captureAttemptCount}x
                            </div>
                          )}
 
@@ -1592,9 +1614,11 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ user, onLogo
                            <button
                              onClick={(e) => { e.stopPropagation(); handleReopenStudent(user.studentId!); }}
                              disabled={reopeningStudentId === user.studentId}
-                             className="text-xs font-bold text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-1.5 hover:bg-amber-100 transition-colors disabled:opacity-50"
+                             className="text-xs font-bold text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-1.5 hover:bg-amber-100 transition-colors disabled:opacity-50 inline-flex items-center gap-1.5"
                            >
-                             {reopeningStudentId === user.studentId ? 'Reopening...' : `↺ Allow Edit (${Math.ceil(timeRemainingMs / 60000)}m left)`}
+                             {reopeningStudentId === user.studentId ? 'Reopening...' : (
+                               <><RefreshIcon className="w-3.5 h-3.5" /> Allow Edit ({Math.ceil(timeRemainingMs / 60000)}m left)</>
+                             )}
                            </button>
                          )}
 
