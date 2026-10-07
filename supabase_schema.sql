@@ -35,7 +35,13 @@ create table public.exams (
   -- stable across refreshes and resumes; answers are stored against question ids (and,
   -- for MCQ, the ORIGINAL option index), so grading is unaffected by either shuffle.
   shuffle_questions boolean default false, -- Each student sees the questions in a different order
-  shuffle_options boolean default false -- Each student sees each MCQ's choices in a different order
+  shuffle_options boolean default false, -- Each student sees each MCQ's choices in a different order
+  -- Leaving the exam view (tab/app switch, or exiting fullscreen) is counted in
+  -- student_progress.tab_switch_count. These two turn that count into a time penalty: the
+  -- first tab_switch_limit exits are free, every one after costs tab_switch_penalty_minutes.
+  -- A penalty of 0 switches it off, which is what every existing exam gets.
+  tab_switch_limit int not null default 0,
+  tab_switch_penalty_minutes int not null default 0
 );
 
 -- QUESTIONS: Linked to Exams

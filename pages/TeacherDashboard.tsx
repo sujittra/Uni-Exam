@@ -2,6 +2,7 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { User, Exam, Question, QuestionType, StudentProgress, CodeLanguage, CodeInputMode } from '../types';
 import { saveExam, deleteExam, getExamsForTeacher, getLiveProgress, importStudents, updateExamStatus, getExamResults, uploadExamImage, getStudents, recalculateExamScores, reopenStudentProgress, updateStudent, deleteStudents, assignMajorToStudents, isAssignedToStudent, StudentImportRow, QuestionStat, getStudentAnswers, setQuestionScore, StudentAnswers, getExamActivity, describeAttempt } from '../services/dataService';
 import { examForStudent } from '../services/shuffle';
+import { effectiveDurationSeconds } from '../services/examTime';
 import { loadView, saveView } from '../services/session';
 import { Card } from '../components/Card';
 import { Button } from '../components/Button';
@@ -1049,6 +1050,38 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ user, onLogo
                          </span>
                       </label>
                    </div>
+                   {/* The exam page already counts every exit from the exam view for the
+                       teacher to read. These two turn that count into a consequence. */}
+                   <div className="bg-gray-50 border border-gray-200 rounded-lg p-3 space-y-2">
+                      <p className="text-sm font-medium text-gray-700">บทลงโทษเมื่อออกจากหน้าสอบ <span className="text-xs text-gray-400 font-normal">Leaving the exam view</span></p>
+                      <div className="grid grid-cols-2 gap-3">
+                         <label className="block text-xs text-gray-600">
+                            ออกได้ฟรี (ครั้ง)
+                            <input
+                               type="number"
+                               min={0}
+                               className="w-full p-2 border rounded mt-1 text-sm"
+                               value={editingExam.tabSwitchLimit ?? 0}
+                               onChange={e => setEditingExam({ ...editingExam, tabSwitchLimit: Math.max(0, Number(e.target.value) || 0) })}
+                            />
+                         </label>
+                         <label className="block text-xs text-gray-600">
+                            เกินแล้วหักครั้งละ (นาที)
+                            <input
+                               type="number"
+                               min={0}
+                               className="w-full p-2 border rounded mt-1 text-sm"
+                               value={editingExam.tabSwitchPenaltyMinutes ?? 0}
+                               onChange={e => setEditingExam({ ...editingExam, tabSwitchPenaltyMinutes: Math.max(0, Number(e.target.value) || 0) })}
+                            />
+                         </label>
+                      </div>
+                      <p className="text-xs text-gray-400">
+                         {(editingExam.tabSwitchPenaltyMinutes ?? 0) > 0
+                            ? `ออก ${editingExam.tabSwitchLimit ?? 0} ครั้งแรกไม่หัก ครั้งถัดไปหักครั้งละ ${editingExam.tabSwitchPenaltyMinutes} นาที สะสมไปเรื่อยๆ — กติกาข้อนี้จะแสดงให้นักศึกษาอ่านก่อนเริ่มสอบ`
+                            : 'ใส่ 0 ในช่องนาที = ไม่หักเวลา นับจำนวนครั้งไว้ให้ดูเฉยๆ เหมือนเดิม — Set the minutes to 0 to only count exits, as before.'}
+                      </p>
+                   </div>
                    <div>
                       <label className="text-sm font-medium text-gray-700">Assigned Sections</label>
                       {uniqueSections.length === 0 ? (
@@ -1562,8 +1595,10 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ user, onLogo
                    
                    {processedMonitorData.map(({ user, progress, display }) => {
                      const isIdle = display.status === 'IDLE';
+                     // Penalties shorten the student's clock, so the monitor has to apply
+                     // them too — otherwise Allow Edit offers time that already ran out.
                      const timeRemainingMs = progress?.startedAt && monitoringExam
-                        ? monitoringExam.durationMinutes * 60000 - (Date.now() - progress.startedAt)
+                        ? effectiveDurationSeconds(monitoringExam, progress.tabSwitchCount || 0) * 1000 - (Date.now() - progress.startedAt)
                         : 0;
                      const canReopen = display.status === 'COMPLETED' && timeRemainingMs > 0;
                      const attempt = describeAttempt(progress, !!monitoringExam?.isActive);
