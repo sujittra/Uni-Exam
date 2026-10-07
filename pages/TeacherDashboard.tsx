@@ -180,20 +180,43 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ user, onLogo
     }
   }, [exams, monitoringExamId]);
 
-  // Polling for monitoring
+  // Polling for monitoring.
+  //
+  // teacher.liveProgress reads every attempt's answers to work the per-question bars out,
+  // so one poll of a class of 118 sitting code questions moves real volume out of the
+  // database. At two seconds that was 1,800 of them an hour from a tab nobody was
+  // necessarily looking at. Five is still well inside how fast an invigilator reacts, and
+  // the poll stops entirely while the tab is in the background.
   useEffect(() => {
-    let interval: number;
-    if (activeTab === 'MONITOR' && monitoringExamId) {
-      const fetchData = async () => {
-        const data = await getLiveProgress(monitoringExamId);
-        setLiveData(data.rows);
-        setQuestionStats(data.questionStats);
-        setActiveCount(data.activeCount);
-      };
-      fetchData();
-      interval = window.setInterval(fetchData, 2000); // 2s polling
-    }
-    return () => clearInterval(interval);
+    if (activeTab !== 'MONITOR' || !monitoringExamId) return;
+
+    let interval: number | undefined;
+    const fetchData = async () => {
+      const data = await getLiveProgress(monitoringExamId);
+      setLiveData(data.rows);
+      setQuestionStats(data.questionStats);
+      setActiveCount(data.activeCount);
+    };
+
+    const start = () => {
+      if (interval !== undefined) return;
+      fetchData(); // catch up immediately on coming back, rather than after a full interval
+      interval = window.setInterval(fetchData, 5000);
+    };
+    const stop = () => {
+      if (interval === undefined) return;
+      clearInterval(interval);
+      interval = undefined;
+    };
+
+    const onVisibility = () => (document.hidden ? stop() : start());
+    if (!document.hidden) start();
+    document.addEventListener('visibilitychange', onVisibility);
+
+    return () => {
+      document.removeEventListener('visibilitychange', onVisibility);
+      stop();
+    };
   }, [activeTab, monitoringExamId]);
 
   const loadExams = async () => {
