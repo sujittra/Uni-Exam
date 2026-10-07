@@ -20,6 +20,19 @@ interface StudentExamProps {
 // Helper for LocalStorage Keys
 const getStorageKey = (studentId: string, examId: string) => `uniexam_prog_${studentId}_${examId}`;
 
+// Which second of each 30-second cycle this student autosaves on.
+//
+// The cycle is counted from the student's own start time, so a class told to press Start
+// together shares a countdown — and "every 30 seconds" meant all of them saving in the
+// same second, a burst of over a hundred writes that then went quiet for 29 seconds.
+// Deriving the offset from the student id spreads them evenly and keeps the spot stable,
+// so a refresh doesn't move anybody into the crowd.
+const autosaveOffset = (studentId: string): number => {
+   let h = 0;
+   for (let i = 0; i < studentId.length; i++) h = (h * 31 + studentId.charCodeAt(i)) >>> 0;
+   return h % 30;
+};
+
 // Proctoring relies on the Fullscreen API, which iOS doesn't support for arbitrary
 // elements in ANY browser (Chrome on iPhone/iPad is Safari's engine underneath).
 // Students are told to sit the exam in desktop Chrome; anything else gets a warning.
@@ -117,6 +130,9 @@ const examRules = (exam: Exam): ExamRule[] => {
 export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
   const [availableExams, setAvailableExams] = useState<Exam[]>([]);
   const [examStatuses, setExamStatuses] = useState<Record<string, StudentProgress>>({});
+  // The exam list and its statuses are published together, so until they arrive the grid
+  // has nothing truthful to show — not even "no exams", which would be a lie on first load.
+  const [statusesLoading, setStatusesLoading] = useState(true);
   const [syncingStatus, setSyncingStatus] = useState<string | null>(null);
   
   const [activeExam, setActiveExam] = useState<Exam | null>(null);
@@ -165,7 +181,7 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
   const [testedOk, setTestedOk] = useState<Record<string, string>>({});
 
   useEffect(() => {
-    loadExamsAndStatus();
+    refreshExams();
   }, []);
 
   // Timer & Auto-Sync
@@ -186,8 +202,9 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
           clearInterval(timer);
         } else {
           setTimeLeft(remaining);
-          // Sync progress to Server every 30 seconds using REF to avoid stale state
-          if (remaining % 30 === 0) {
+          // Sync progress to Server every 30 seconds using REF to avoid stale state,
+          // on this student's own second of the cycle rather than everyone's at once.
+          if (remaining % 30 === autosaveOffset(user.studentId || '')) {
              syncProgress(activeExam.id, currentQuestionIdx, answersRef.current, 'IN_PROGRESS', examStartTime, true);
           }
         }
@@ -295,11 +312,14 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
   }, [currentQuestionIdx, activeExam]);
 
   const loadExamsAndStatus = async () => {
+    setStatusesLoading(true);
     const exams = await getExamsForStudent(user);
-    setAvailableExams(exams);
-    
-    const statuses: Record<string, StudentProgress> = {};
-    for (const exam of exams) {
+
+    // All in flight at once. One await per exam inside a loop meant the dashboard needed
+    // as long as every request chained end to end, which is the window the cards used to
+    // sit in showing the wrong thing.
+    let repaired = false;
+    const entries = await Promise.all(exams.map(async (exam) => {
        let dbProg = await getStudentProgress(user.studentId!, exam.id);
        const localKey = getStorageKey(user.studentId!, exam.id);
        const localStr = localStorage.getItem(localKey);
@@ -310,6 +330,9 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
        // (e.g. a teacher reopened the exam for editing) so that doesn't get overwritten.
        if (localProg?.status === 'COMPLETED' && (!dbProg || (dbProg.status !== 'COMPLETED' && localProg.lastUpdated > dbProg.lastUpdated))) {
           console.log(`Auto-syncing completed exam: ${exam.id}`);
+          repaired = true;
+          // Cleared once below, not here: these run together now, and the first one to
+          // finish would otherwise take the message down while another is still syncing.
           setSyncingStatus(`Syncing exam data: ${exam.title}...`);
           const result = await submitStudentProgress(localProg);
           if (result.success) {
@@ -317,7 +340,6 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
           } else {
              console.error("Auto-sync failed:", result.error);
           }
-          setSyncingStatus(null);
        }
 
        let finalProg = dbProg;
@@ -327,10 +349,27 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
           finalProg = localProg;
        }
 
-       if (finalProg) statuses[exam.id] = finalProg;
+       return [exam.id, finalProg] as const;
+    }));
+
+    const statuses: Record<string, StudentProgress> = {};
+    for (const [examId, prog] of entries) {
+       if (prog) statuses[examId] = prog;
     }
+
+    // Published together, and only now: a card rendered before its status knows nothing,
+    // and "nothing" reads as "not started", so an exam the student had already submitted
+    // came up offering Start Exam until the statuses landed a second or two later.
     setExamStatuses(statuses);
+    setAvailableExams(exams);
+    if (repaired) setSyncingStatus(null);
   };
+
+  // The grid shows nothing at all until this resolves, so a request that throws must not
+  // be allowed to leave it loading forever.
+  const refreshExams = () => loadExamsAndStatus()
+    .catch(err => console.error('Could not load exams:', err))
+    .finally(() => setStatusesLoading(false));
 
   const initExamSession = async (exam: Exam) => {
     if (examStatuses[exam.id]?.status === 'COMPLETED') {
@@ -366,7 +405,7 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
     if (dbData?.status === 'COMPLETED' || finalData?.status === 'COMPLETED') {
         document.exitFullscreen?.().catch(() => {});
         alert('คุณส่งข้อสอบชุดนี้ไปแล้ว ไม่สามารถกลับเข้าทำต่อได้\nYou have already submitted this exam.');
-        loadExamsAndStatus();
+        refreshExams();
         return;
     }
 
@@ -466,7 +505,7 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
 
     setActiveExam(null);
     setJustFinished(true);
-    loadExamsAndStatus();
+    refreshExams();
   };
 
   // UI Handlers
@@ -894,7 +933,12 @@ export const StudentExam: React.FC<StudentExamProps> = ({ user, onLogout }) => {
          )}
          
          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-            {availableExams.length === 0 ? (
+            {statusesLoading ? (
+               <div className="col-span-3 text-center py-20 text-gray-400">
+                  กำลังโหลดข้อสอบ...
+                  <span className="block text-xs mt-1">Loading your exams…</span>
+               </div>
+            ) : availableExams.length === 0 ? (
                <div className="col-span-3 text-center py-20 text-gray-400">No exams assigned to your section ({user.section}).</div>
             ) : (
                availableExams.map(exam => {
